@@ -45,7 +45,7 @@ type Config struct {
 func Load() Config {
 	return Config{
 		Addr:        env("LIBRA_ADDR", ":8080"),
-		DatabaseURL: env("LIBRA_DATABASE_URL", "postgres://libra:libra@localhost:5432/libra?sslmode=disable"),
+		DatabaseURL: env("LIBRA_DATABASE_URL", "postgres://libra:libra@localhost:5433/libra?sslmode=disable"),
 		// Secure by default. Browsers treat http://localhost as secure too.
 		CookieSecure:     envBool("LIBRA_COOKIE_SECURE", true),
 		SessionTTL:       time.Duration(envInt("LIBRA_SESSION_TTL_HOURS", 168)) * time.Hour,
