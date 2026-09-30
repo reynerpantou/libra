@@ -16,6 +16,7 @@ const STATUS_FILTERS: [string, string][] = [
 
 export default function Experiments() {
   const [params, setParams] = useSearchParams();
+  const platform = params.get("platform") ?? "";
   const business = params.get("business") ?? "";
   const status = params.get("status") ?? "";
   const [q, setQ] = useState(params.get("q") ?? "");
@@ -23,7 +24,8 @@ export default function Experiments() {
   const canEdit = useCan("editor");
   const nav = useNavigate();
   const businesses = useAsync(() => api.businesses(), []);
-  const list = useAsync(() => api.experiments({ business, status, q: dq }), [business, status, dq]);
+  const list = useAsync(() => api.experiments({ platform, business, status, q: dq }), [platform, business, status, dq]);
+  const platforms = Array.from(new Map((businesses.data ?? []).map((b) => [b.platform_key, b.platform_name])).entries());
 
   const set = (k: string, v: string) => {
     const next = new URLSearchParams(params);
@@ -55,19 +57,35 @@ export default function Experiments() {
                 </button>
               ))}
             </div>
-            <select className="input" style={{ width: 220 }} value={business} onChange={(e) => set("business", e.target.value)}>
-              <option value="">All businesses</option>
-              {Array.from(new Set((businesses.data ?? []).map((b) => b.platform_name))).map((p) => (
-                <optgroup key={p} label={p}>
-                  {businesses.data
-                    ?.filter((b) => b.platform_name === p)
-                    .map((b) => (
-                      <option key={b.id} value={String(b.id)}>
-                        {b.name}
-                      </option>
-                    ))}
-                </optgroup>
+            <select
+              className="input"
+              style={{ width: 180 }}
+              value={platform}
+              aria-label="Platform"
+              onChange={(e) => {
+                const next = new URLSearchParams(params);
+                if (e.target.value) next.set("platform", e.target.value);
+                else next.delete("platform");
+                next.delete("business");
+                setParams(next, { replace: true });
+              }}
+            >
+              <option value="">All platforms</option>
+              {platforms.map(([key, name]) => (
+                <option key={key} value={key}>
+                  {name}
+                </option>
               ))}
+            </select>
+            <select className="input" style={{ width: 180 }} value={business} aria-label="Business" onChange={(e) => set("business", e.target.value)}>
+              <option value="">All businesses</option>
+              {(businesses.data ?? [])
+                .filter((b) => !platform || b.platform_key === platform)
+                .map((b) => (
+                  <option key={b.id} value={String(b.id)}>
+                    {platform ? b.name : `${b.name} · ${b.platform_name}`}
+                  </option>
+                ))}
             </select>
           </div>
           <input className="input" style={{ width: 240 }} placeholder="Search name or hypothesis" value={q} onChange={(e) => setQ(e.target.value)} />

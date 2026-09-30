@@ -415,3 +415,10 @@ pre.code {
 .json-ns-key { color: var(--accent-text); font-weight: 650; }
 .json-ns-body { padding-left: 18px; }
 .reviewer-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; max-height: 280px; overflow: auto; }
+.copy-btn { border: 1px solid var(--border); background: var(--surface); color: var(--text-2); border-radius: 6px; font-size: 11.5px; padding: 1px 6px; cursor: pointer; white-space: nowrap; font-weight: 500; }
+.copy-btn:hover { border-color: var(--accent); color: var(--accent-text); }
+.th-copy { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.rep-group-head { cursor: pointer; user-select: none; }
+.rep-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+mark.hit { background: var(--warn-soft); color: inherit; border-radius: 3px; padding: 0 1px; }
+.choice-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; }
