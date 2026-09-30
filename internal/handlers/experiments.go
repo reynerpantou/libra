@@ -200,6 +200,7 @@ type Experiment struct {
 	UpdatedAt         time.Time        `json:"updated_at"`
 	Variants          []VariantIn      `json:"variants,omitempty"`
 	Whitelist         []WhitelistEntry `json:"whitelist,omitempty"`
+	Reviewers         []Reviewer       `json:"reviewers,omitempty"` // invited for the current (or last) review
 	Units             int64            `json:"units"`
 	Actions           []string         `json:"actions,omitempty"`
 }
@@ -285,6 +286,9 @@ func (s *Server) loadExperiment(ctx context.Context, id int64, full bool) (Exper
 	}
 	e.Variants, err = s.loadVariants(ctx, s.DB, id)
 	if err != nil {
+		return e, err
+	}
+	if e.Reviewers, err = s.loadReviewers(ctx, id); err != nil {
 		return e, err
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT unit_id, variant_id, note, created_at FROM whitelist WHERE experiment_id = $1 ORDER BY created_at`, id)
@@ -717,13 +721,18 @@ var transitions = map[string]struct {
 	"archive":  {[]string{assign.StatusDraft, assign.StatusRejected, assign.StatusStopped, assign.StatusLaunched}, assign.StatusArchived},
 }
 
+// canReview: only the people invited to review (the owner too, if they
+// invited themselves) approve or reject.
 func canReview(e Experiment, u middleware.User) bool {
 	if middleware.Rank(u.Role) < middleware.Rank("editor") {
 		return false
 	}
-	// Reviewing your own experiment defeats the point; admins may, as a
-	// break-glass (it's recorded in the history).
-	return e.OwnerID == nil || *e.OwnerID != u.ID || u.Role == "admin"
+	for _, r := range e.Reviewers {
+		if r.UserID == u.ID {
+			return true
+		}
+	}
+	return false
 }
 
 func availableActions(e Experiment, u middleware.User) []string {
@@ -794,9 +803,10 @@ func (s *Server) ExperimentAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Note      string   `json:"note"`
-		VariantID int64    `json:"variant_id"`
-		Gradual   *Gradual `json:"gradual,omitempty"` // start / launch: ramp up instead of all at once
+		Note        string   `json:"note"`
+		VariantID   int64    `json:"variant_id"`
+		ReviewerIDs []int64  `json:"reviewer_ids"`      // submit: who reviews (at least one)
+		Gradual     *Gradual `json:"gradual,omitempty"` // start / launch: ramp up instead of all at once
 	}
 	if r.ContentLength != 0 && !decodeOr400(w, r, &req) {
 		return
@@ -884,11 +894,32 @@ func (s *Server) ExperimentAction(w http.ResponseWriter, r *http.Request) {
 		if !requireReview {
 			to, args[1] = assign.StatusApproved, assign.StatusApproved
 			detail["review"] = "skipped: the business doesn't require review"
+		} else {
+			names, msg, err := inviteReviewers(r.Context(), tx, id, req.ReviewerIDs, user(r).ID, true)
+			if err != nil {
+				serverError(w, r, err)
+				return
+			}
+			if msg != "" {
+				badRequest(w, msg)
+				return
+			}
+			detail["reviewers"] = names
 		}
 		add("review_note = $%d", "")
 	case "approve", "reject":
 		add("review_note = $%d", req.Note)
 		add("reviewer_id = $%d", user(r).ID)
+		decision := "approved"
+		if action == "reject" {
+			decision = "rejected"
+		}
+		if _, err := tx.ExecContext(r.Context(), `
+			UPDATE experiment_reviewers SET decision = $3, note = $4, decided_at = now() WHERE experiment_id = $1 AND user_id = $2`,
+			id, user(r).ID, decision, req.Note); err != nil {
+			serverError(w, r, err)
+			return
+		}
 	case "start", "resume":
 		taken, err := takenBuckets(r.Context(), tx, e.LayerID, id)
 		if err != nil {

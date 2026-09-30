@@ -189,7 +189,7 @@ export const api = {
   experiment: (id: number) => request<Experiment>("GET", `/experiments/${id}`),
   createExperiment: (e: ExperimentInput) => request<Experiment>("POST", "/experiments", e),
   updateExperiment: (id: number, e: ExperimentInput) => request<Experiment>("PUT", `/experiments/${id}`, e),
-  action: (id: number, action: string, body: { note?: string; variant_id?: number; gradual?: Gradual } = {}) =>
+  action: (id: number, action: string, body: { note?: string; variant_id?: number; gradual?: Gradual; reviewer_ids?: number[] } = {}) =>
     request<Experiment>("POST", `/experiments/${id}/actions/${action}`, body),
   setTraffic: (id: number, traffic_target: number, gradual?: Gradual) =>
     request<Experiment>("PUT", `/experiments/${id}/traffic`, { traffic_target, gradual }),
@@ -198,6 +198,7 @@ export const api = {
   addWhitelist: (id: number, unit_ids: string[], variant_id: number, note: string) =>
     request<void>("POST", `/experiments/${id}/whitelist`, { unit_ids, variant_id, note }),
   removeWhitelist: (id: number, unit: string) => request<void>("DELETE", `/experiments/${id}/whitelist/${encodeURIComponent(unit)}`),
+  inviteReviewers: (id: number, user_ids: number[]) => request<Experiment>("POST", `/experiments/${id}/reviewers`, { user_ids }),
   history: (id: number) => request<AuditEntry[]>("GET", `/experiments/${id}/history`),
   clone: (id: number) => request<{ id: number }>("POST", `/experiments/${id}/clone`),
   report: (id: number, p: { from?: string; to?: string; metrics?: string; groups?: string; dimension?: string; alpha?: string }) =>

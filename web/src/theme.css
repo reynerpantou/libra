@@ -414,3 +414,4 @@ pre.code {
 .json-ns-line { font-family: var(--mono); font-size: 13px; color: var(--text-2); padding: 2px 4px; }
 .json-ns-key { color: var(--accent-text); font-weight: 650; }
 .json-ns-body { padding-left: 18px; }
+.reviewer-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; max-height: 280px; overflow: auto; }
