@@ -1,0 +1,45 @@
+# Both ports bind to 127.0.0.1: nothing is reachable from the internet
+# directly. On a server, put an HTTPS reverse proxy in front of :8080.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-libra}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
+      - POSTGRES_DB=${POSTGRES_DB:-libra}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-libra}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  libra:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - LIBRA_DATABASE_URL=postgres://${POSTGRES_USER:-libra}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-libra}?sslmode=disable
+      - LIBRA_COOKIE_SECURE=${LIBRA_COOKIE_SECURE:-true}
+      - LIBRA_TRUSTED_PROXIES=${LIBRA_TRUSTED_PROXIES:-172.16.0.0/12}
+      - LIBRA_PUBLIC_URL=${LIBRA_PUBLIC_URL:-http://localhost:8080}
+      - LIBRA_ADMIN_USER=${LIBRA_ADMIN_USER:-admin}
+      - LIBRA_ADMIN_EMAIL=${LIBRA_ADMIN_EMAIL:-}
+      - LIBRA_PIPELINE_INTERVAL_SECONDS=${LIBRA_PIPELINE_INTERVAL_SECONDS:-300}
+      - LIBRA_GOOGLE_CLIENT_ID=${LIBRA_GOOGLE_CLIENT_ID:-}
+      - LIBRA_GOOGLE_CLIENT_SECRET=${LIBRA_GOOGLE_CLIENT_SECRET:-}
+      - LIBRA_APPLE_CLIENT_ID=${LIBRA_APPLE_CLIENT_ID:-}
+      - LIBRA_APPLE_TEAM_ID=${LIBRA_APPLE_TEAM_ID:-}
+      - LIBRA_APPLE_KEY_ID=${LIBRA_APPLE_KEY_ID:-}
+      - LIBRA_APPLE_PRIVATE_KEY=${LIBRA_APPLE_PRIVATE_KEY:-}
+    restart: unless-stopped
+
+volumes:
+  pgdata:

@@ -1,0 +1,181 @@
+import type {
+  ApiKey,
+  AuditEntry,
+  Business,
+  EventSummary,
+  Experiment,
+  Hit,
+  Layer,
+  Measure,
+  Metric,
+  MetricGroup,
+  PipelineStatus,
+  Report,
+  Rule,
+  Step,
+  TrendPoint,
+  User,
+  Variant,
+} from "./types";
+
+export class ApiError extends Error {
+  code: string;
+  status: number;
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
+}
+
+function csrfToken(): string {
+  const m = document.cookie.match(/(?:^|;\s*)libra_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
+export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (method !== "GET") headers["X-CSRF-Token"] = csrfToken();
+  const res = await fetch(`/api${path}`, {
+    method,
+    headers,
+    credentials: "same-origin",
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const err = data as { code?: string; message?: string } | null;
+    if (res.status === 401 && !path.startsWith("/auth") && path !== "/me") {
+      window.location.assign("/login");
+    }
+    throw new ApiError(res.status, err?.code ?? "error", err?.message ?? `request failed (${res.status})`);
+  }
+  return data as T;
+}
+
+const qs = (p: Record<string, string | number | undefined | null>) => {
+  const s = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) if (v !== undefined && v !== null && v !== "") s.set(k, String(v));
+  const out = s.toString();
+  return out ? `?${out}` : "";
+};
+
+export interface ExperimentInput {
+  business_id: number;
+  layer_id: number;
+  name: string;
+  hypothesis: string;
+  description: string;
+  owner_id: number | null;
+  traffic_target: number;
+  targeting: Rule[];
+  metric_group_id: number | null;
+  variants: Variant[];
+}
+
+export type MeasureInput = Omit<Measure, "id" | "business_id" | "pending_backfill" | "used_by" | "filters_text">;
+export type MetricInput = Pick<Metric, "key" | "name" | "description" | "formula" | "format" | "decimals" | "direction">;
+
+export const api = {
+  providers: () => request<{ providers: string[] }>("GET", "/auth/providers"),
+  redeemLink: (token: string) => request<User>("POST", "/auth/link", { token }),
+  logout: () => request<void>("POST", "/logout"),
+  me: () => request<User>("GET", "/me"),
+
+  users: () => request<User[]>("GET", "/users"),
+  createUser: (u: { username: string; email: string; display_name: string; role: string }) => request<User>("POST", "/users", u),
+  updateUser: (id: number, u: { username: string; email: string; display_name: string; role: string }) =>
+    request<User>("PUT", `/users/${id}`, u),
+  deleteUser: (id: number) => request<void>("DELETE", `/users/${id}`),
+  apiKeys: () => request<ApiKey[]>("GET", "/api-keys"),
+  createApiKey: (name: string, scopes: string[]) => request<ApiKey>("POST", "/api-keys", { name, scopes }),
+  revokeApiKey: (id: number) => request<void>("DELETE", `/api-keys/${id}`),
+
+  businesses: () => request<Business[]>("GET", "/businesses"),
+  business: (id: number) => request<Business>("GET", `/businesses/${id}`),
+  createBusiness: (b: { key: string; name: string; description: string; require_review: boolean }) =>
+    request<Business>("POST", "/businesses", b),
+  updateBusiness: (id: number, b: { key: string; name: string; description: string; require_review: boolean }) =>
+    request<Business>("PUT", `/businesses/${id}`, b),
+
+  measures: (bid: number) => request<Measure[]>("GET", `/businesses/${bid}/measures`),
+  createMeasure: (bid: number, m: MeasureInput) => request<Measure>("POST", `/businesses/${bid}/measures`, m),
+  updateMeasure: (id: number, m: MeasureInput) => request<Measure>("PUT", `/measures/${id}`, m),
+  deleteMeasure: (id: number) => request<void>("DELETE", `/measures/${id}`),
+
+  metrics: (bid: number) => request<Metric[]>("GET", `/businesses/${bid}/metrics`),
+  createMetric: (bid: number, m: MetricInput) => request<Metric>("POST", `/businesses/${bid}/metrics`, m),
+  updateMetric: (id: number, m: MetricInput) => request<Metric>("PUT", `/metrics/${id}`, m),
+  deleteMetric: (id: number) => request<void>("DELETE", `/metrics/${id}`),
+  validateFormula: (bid: number, formula: string, key: string) =>
+    request<{ ok: boolean; error?: string; expanded?: string; kind?: string; measures?: string[] }>(
+      "POST",
+      `/businesses/${bid}/formula/validate`,
+      { formula, key }
+    ),
+  previewFormula: (bid: number, formula: string, days: number) =>
+    request<{ ok: boolean; error?: string; value?: number | null; users?: number; measures?: Record<string, number>; from?: string; to?: string; kind?: string }>(
+      "POST",
+      `/businesses/${bid}/formula/preview`,
+      { formula, days }
+    ),
+
+  groups: (bid: number) => request<MetricGroup[]>("GET", `/businesses/${bid}/metric-groups`),
+  createGroup: (bid: number, g: { name: string; description: string; metric_ids: number[] }) =>
+    request<MetricGroup>("POST", `/businesses/${bid}/metric-groups`, g),
+  updateGroup: (id: number, g: { name: string; description: string; metric_ids: number[] }) =>
+    request<MetricGroup>("PUT", `/metric-groups/${id}`, g),
+  deleteGroup: (id: number) => request<void>("DELETE", `/metric-groups/${id}`),
+
+  eventSummary: (bid: number) => request<EventSummary>("GET", `/businesses/${bid}/events/summary`),
+  recentEvents: (bid: number) =>
+    request<{ id: number; event: string; unit_id: string; ts: string; value: number; props: Record<string, unknown> }[]>(
+      "GET",
+      `/businesses/${bid}/events/recent`
+    ),
+
+  layers: () => request<Layer[]>("GET", "/layers"),
+  createLayer: (name: string, description: string) => request<Layer>("POST", "/layers", { name, description }),
+  updateLayer: (id: number, name: string, description: string) => request<void>("PUT", `/layers/${id}`, { name, description }),
+
+  experiments: (p: { business?: string; status?: string; q?: string; mine?: string } = {}) =>
+    request<Experiment[]>("GET", `/experiments${qs(p)}`),
+  experiment: (id: number) => request<Experiment>("GET", `/experiments/${id}`),
+  createExperiment: (e: ExperimentInput) => request<Experiment>("POST", "/experiments", e),
+  updateExperiment: (id: number, e: ExperimentInput) => request<Experiment>("PUT", `/experiments/${id}`, e),
+  action: (id: number, action: string, body: { note?: string; variant_id?: number } = {}) =>
+    request<Experiment>("POST", `/experiments/${id}/actions/${action}`, body),
+  setTraffic: (id: number, traffic_target: number) => request<Experiment>("PUT", `/experiments/${id}/traffic`, { traffic_target }),
+  addWhitelist: (id: number, unit_ids: string[], variant_id: number, note: string) =>
+    request<void>("POST", `/experiments/${id}/whitelist`, { unit_ids, variant_id, note }),
+  removeWhitelist: (id: number, unit: string) => request<void>("DELETE", `/experiments/${id}/whitelist/${encodeURIComponent(unit)}`),
+  history: (id: number) => request<AuditEntry[]>("GET", `/experiments/${id}/history`),
+  clone: (id: number) => request<{ id: number }>("POST", `/experiments/${id}/clone`),
+  report: (id: number, p: { from?: string; to?: string; metrics?: string; dimension?: string; alpha?: string }) =>
+    request<Report>("GET", `/experiments/${id}/report${qs(p)}`),
+  trend: (id: number, metric: number, p: { from?: string; to?: string; alpha?: string }) =>
+    request<TrendPoint[]>("GET", `/experiments/${id}/trend${qs({ metric, ...p })}`),
+  exposures: (id: number) => request<{ day: string; variants: Record<string, number> }[]>("GET", `/experiments/${id}/exposures`),
+
+  diagnose: (unit_id: string, business: string, attrs: Record<string, unknown>) =>
+    request<{ snapshot_version: number; result: { hits: Hit[]; params: Record<string, unknown>; trace: Step[]; conflicts?: unknown[] } }>(
+      "POST",
+      "/tools/diagnose",
+      { unit_id, business, attrs }
+    ),
+  paramSearch: (q: string) =>
+    request<{ experiment_id: number; experiment: string; business: string; status: string; variant: string; path: string }[]>(
+      "GET",
+      `/tools/params${qs({ q })}`
+    ),
+  pipeline: () => request<PipelineStatus>("GET", "/pipeline"),
+  runPipeline: () => request<Record<string, number>>("POST", "/pipeline/run"),
+};
