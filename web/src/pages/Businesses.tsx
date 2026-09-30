@@ -1,25 +1,83 @@
-import { useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Empty, ErrorBox, Field, Icon, Loading, Modal } from "../components/ui";
+import { Empty, ErrorBox, Field, Icon, Loading, Modal, Segmented } from "../components/ui";
 import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { useAsync } from "../lib/hooks";
-import type { Platform } from "../lib/types";
+import type { Business, Platform } from "../lib/types";
+
+type View = "cards" | "list";
+
+function useStored<T>(key: string, initial: T): [T, (v: T) => void] {
+  const [v, setV] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? (JSON.parse(raw) as T) : initial;
+    } catch {
+      return initial;
+    }
+  });
+  const set = (x: T) => {
+    setV(x);
+    try {
+      localStorage.setItem(key, JSON.stringify(x));
+    } catch {
+      /* private mode */
+    }
+  };
+  return [v, set];
+}
+
+const matches = (q: string, ...xs: (string | number)[]) => xs.some((x) => String(x).toLowerCase().includes(q));
 
 export default function Businesses() {
   const list = useAsync(() => api.platforms(), []);
   const isAdmin = useCan("admin");
   const nav = useNavigate();
   const [creating, setCreating] = useState<"platform" | number | null>(null);
+  const [q, setQ] = useState("");
+  const [platform, setPlatform] = useState("");
+  const [only, setOnly] = useState<"" | "experiments" | "metrics" | "empty">("");
+  const [sort, setSort] = useStored<"name" | "experiments" | "recent">("libra-biz-sort", "name");
+  const [view, setView] = useStored<View>("libra-biz-view", "cards");
+  const [collapsed, setCollapsed] = useStored<number[]>("libra-biz-collapsed", []);
   const platforms = list.data ?? [];
+  const query = q.trim().toLowerCase();
+  const filtering = !!query || !!only;
+
+  // Filter businesses inside each platform; a platform matching the search
+  // shows all of its businesses.
+  const shown = useMemo(
+    () =>
+      platforms
+        .filter((p) => !platform || String(p.id) === platform)
+        .map((p) => {
+          const platformHit = !!query && matches(query, p.name, p.key, p.id);
+          const bs = p.businesses
+            .filter((b) => !query || platformHit || matches(query, b.name, b.key, b.id, b.description))
+            .filter((b) => (only === "experiments" ? b.experiments > 0 : only === "metrics" ? b.metrics > 0 : only === "empty" ? b.metrics === 0 && b.experiments === 0 : true))
+            .sort((x, y) =>
+              sort === "experiments" ? y.experiments - x.experiments || x.name.localeCompare(y.name) : sort === "recent" ? y.created_at.localeCompare(x.created_at) : x.name.localeCompare(y.name)
+            );
+          return { p, bs, platformHit };
+        })
+        .filter(({ bs, platformHit }) => !filtering || bs.length > 0 || platformHit),
+    [platforms, platform, query, only, sort, filtering]
+  );
+  const total = platforms.reduce((n, p) => n + p.businesses.length, 0);
+  const shownCount = shown.reduce((n, x) => n + x.bs.length, 0);
+  const isCollapsed = (id: number) => !filtering && collapsed.includes(id);
+  const toggle = (id: number) => setCollapsed(collapsed.includes(id) ? collapsed.filter((x) => x !== id) : [...collapsed, id]);
+
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <h1>Businesses & metrics</h1>
           <p>
-            A <b>platform</b> (an app or company) holds <b>businesses</b> (search, feed, checkout…). Each business sends its own events and defines
-            metrics as formulas, like <code>search_gmv / users</code>; platform metrics and default groups apply to every business under it.
+            A <b>platform</b> (an app or company) holds <b>businesses</b> (search, feed, ads…). Each business sends its own events and defines
+            metrics as formulas, like <code>search_gmv / users</code>. Every platform has a <b>default metric group</b> that's reported for every
+            experiment of its businesses.
           </p>
         </div>
         {isAdmin && (
@@ -28,13 +86,65 @@ export default function Businesses() {
               <Icon name="plus" /> New platform
             </button>
             {platforms.length > 0 && (
-              <button className="btn btn-primary" onClick={() => setCreating(platforms[0].id)}>
+              <button className="btn btn-primary" onClick={() => setCreating(platform ? Number(platform) : platforms[0].id)}>
                 <Icon name="plus" /> New business
               </button>
             )}
           </div>
         )}
       </div>
+      {platforms.length > 0 && (
+        <div className="card card-pad">
+          <div className="row" style={{ gap: 10 }}>
+            <input
+              className="input"
+              style={{ flex: 1, minWidth: 220 }}
+              placeholder="Search businesses or platforms by name, key or id…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <select className="input" style={{ width: 180 }} value={platform} onChange={(e) => setPlatform(e.target.value)}>
+              <option value="">All platforms</option>
+              {platforms.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <select className="input" style={{ width: 170 }} value={only} onChange={(e) => setOnly(e.target.value as typeof only)}>
+              <option value="">Any business</option>
+              <option value="experiments">With experiments</option>
+              <option value="metrics">With metrics</option>
+              <option value="empty">Not set up yet</option>
+            </select>
+            <select className="input" style={{ width: 150 }} value={sort} onChange={(e) => setSort(e.target.value as typeof sort)}>
+              <option value="name">Sort: name</option>
+              <option value="experiments">Sort: experiments</option>
+              <option value="recent">Sort: newest</option>
+            </select>
+            <Segmented<View>
+              options={[
+                ["cards", "Cards"],
+                ["list", "List"],
+              ]}
+              value={view}
+              onChange={setView}
+            />
+          </div>
+          <div className="row small faint" style={{ marginTop: 8 }}>
+            <span>
+              {filtering ? `${shownCount} of ${total}` : total} businesses in {shown.length} platform{shown.length === 1 ? "" : "s"}
+            </span>
+            <span className="spacer" />
+            <button className="btn btn-ghost btn-sm" onClick={() => setCollapsed([])} disabled={filtering}>
+              Expand all
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setCollapsed(platforms.map((p) => p.id))} disabled={filtering}>
+              Collapse all
+            </button>
+          </div>
+        </div>
+      )}
       <ErrorBox error={list.error} />
       {list.loading && !list.data ? (
         <Loading />
@@ -46,71 +156,137 @@ export default function Businesses() {
             </p>
           </Empty>
         </div>
+      ) : shown.length === 0 ? (
+        <div className="card">
+          <Empty title="Nothing matches">
+            <p>Try another search or filter.</p>
+          </Empty>
+        </div>
       ) : (
         <div className="stack">
-          {platforms.map((p) => (
-            <section key={p.id} className="card">
-              <div className="card-head">
-                <div>
-                  <div className="row">
-                    <h2>
-                      <Link to={`/platforms/${p.id}`}>{p.name}</Link>
-                    </h2>
-                    <span className="chip">{p.key}</span>
-                    <span className="chip" title="Platform id">
-                      id {p.id}
-                    </span>
-                  </div>
-                  <p className="small faint">
-                    {p.description || "No description"} · shared: {p.metrics} metrics, {p.measures} measures, {p.metric_groups} groups
-                  </p>
-                </div>
-                <div className="row">
-                  <Link className="btn btn-sm" to={`/platforms/${p.id}`}>
-                    Platform metrics
-                  </Link>
-                  {isAdmin && (
-                    <button className="btn btn-sm" onClick={() => setCreating(p.id)}>
-                      <Icon name="plus" /> Business
+          {shown.map(({ p, bs }) => {
+            const closed = isCollapsed(p.id);
+            return (
+              <section key={p.id} className="card">
+                <div className="card-head" style={closed ? { borderBottom: 0 } : undefined}>
+                  <div className="row" style={{ gap: 8, minWidth: 0 }}>
+                    <button className="icon-btn" aria-label={closed ? "Expand" : "Collapse"} onClick={() => toggle(p.id)} disabled={filtering}>
+                      <span style={{ display: "inline-block", width: 14 }}>{closed ? "▸" : "▾"}</span>
                     </button>
-                  )}
-                </div>
-              </div>
-              <div className="card-pad">
-                {p.businesses.length === 0 ? (
-                  <p className="faint small">No businesses yet.</p>
-                ) : (
-                  <div className="grid-3">
-                    {p.businesses.map((b) => (
-                      <button key={b.id} className="card card-pad stack-sm" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => nav(`/businesses/${b.id}`)}>
-                        <div className="row-between">
-                          <h3>{b.name}</h3>
-                          <span className="row" style={{ gap: 4 }}>
-                            <span className="chip">{b.key}</span>
-                            <span className="chip" title="Business id">
-                              id {b.id}
-                            </span>
-                          </span>
-                        </div>
-                        <p className="muted small" style={{ minHeight: 20 }}>
-                          {b.description || "No description"}
-                        </p>
-                        <div className="row small faint">
-                          <span>{b.metrics} metrics</span>·<span>{b.measures} measures</span>·<span>{b.experiments} experiments</span>
-                        </div>
-                      </button>
-                    ))}
+                    <div style={{ minWidth: 0 }}>
+                      <div className="row">
+                        <h2>
+                          <Link to={`/platforms/${p.id}`}>{p.name}</Link>
+                        </h2>
+                        <span className="chip">{p.key}</span>
+                        <span className="chip" title="Platform id">
+                          id {p.id}
+                        </span>
+                        <span className="badge">
+                          {filtering && bs.length !== p.businesses.length ? `${bs.length} of ${p.businesses.length}` : p.businesses.length} businesses
+                        </span>
+                      </div>
+                      <p className="small faint">
+                        {p.description || "No description"} · shared: {p.metrics} metrics, {p.measures} measures, {p.metric_groups} groups
+                      </p>
+                    </div>
                   </div>
-                )}
-              </div>
-            </section>
-          ))}
+                  <div className="row">
+                    <Link className="btn btn-sm" to={`/platforms/${p.id}`}>
+                      Manage platform
+                    </Link>
+                    {isAdmin && (
+                      <button className="btn btn-sm" onClick={() => setCreating(p.id)}>
+                        <Icon name="plus" /> Business
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {!closed &&
+                  (bs.length === 0 ? (
+                    <div className="card-pad">
+                      <p className="faint small">No businesses{filtering ? " match" : " yet"}.</p>
+                    </div>
+                  ) : view === "list" ? (
+                    <BusinessTable businesses={bs} />
+                  ) : (
+                    <div className="card-pad">
+                      <div className="grid-3">
+                        {bs.map((b) => (
+                          <button key={b.id} className="card card-pad stack-sm" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => nav(`/businesses/${b.id}`)}>
+                            <div className="row-between">
+                              <h3>{b.name}</h3>
+                              <span className="row" style={{ gap: 4 }}>
+                                <span className="chip">{b.key}</span>
+                                <span className="chip" title="Business id">
+                                  id {b.id}
+                                </span>
+                              </span>
+                            </div>
+                            <p className="muted small" style={{ minHeight: 20 }}>
+                              {b.description || "No description"}
+                            </p>
+                            <div className="row small faint">
+                              <span>{b.metrics} metrics</span>·<span>{b.measures} measures</span>·<span>{b.experiments} experiments</span>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+              </section>
+            );
+          })}
         </div>
       )}
       {creating === "platform" && <PlatformModal onClose={() => setCreating(null)} onSaved={(id) => nav(`/platforms/${id}`)} />}
       {typeof creating === "number" && (
-        <BusinessModal platforms={platforms} platformId={creating} onClose={() => setCreating(null)} onSaved={(id) => nav(`/businesses/${id}`)} />
+        <BusinessModal platforms={platforms} platformId={creating} onClose={() => setCreating(null)} onSaved={(b) => nav(`/businesses/${b.id}`)} />
       )}
+    </div>
+  );
+}
+
+// BusinessTable is the compact view: one row per business.
+export function BusinessTable({ businesses, actions }: { businesses: Business[]; actions?: (b: Business) => ReactNode }) {
+  const nav = useNavigate();
+  return (
+    <div className="table-wrap">
+      <table className="tbl tbl-compact">
+        <thead>
+          <tr>
+            <th>Business</th>
+            <th>Key</th>
+            <th className="num">Id</th>
+            <th className="num">Metrics</th>
+            <th className="num">Measures</th>
+            <th className="num">Experiments</th>
+            <th>Review</th>
+            {actions && <th />}
+          </tr>
+        </thead>
+        <tbody>
+          {businesses.map((b) => (
+            <tr key={b.id} className="clickable" onClick={() => nav(`/businesses/${b.id}`)}>
+              <td>
+                <div style={{ fontWeight: 600 }}>{b.name}</div>
+                {b.description && <div className="small faint">{b.description}</div>}
+              </td>
+              <td className="mono">{b.key}</td>
+              <td className="num mono">{b.id}</td>
+              <td className="num">{b.metrics}</td>
+              <td className="num">{b.measures}</td>
+              <td className="num">{b.experiments}</td>
+              <td className="small">{b.require_review ? "required" : "—"}</td>
+              {actions && (
+                <td className="right nowrap" onClick={(e) => e.stopPropagation()}>
+                  {actions(b)}
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -165,24 +341,36 @@ export function PlatformModal({ platform, onClose, onSaved }: { platform?: Platf
   );
 }
 
-function BusinessModal({ platforms, platformId, onClose, onSaved }: { platforms: Platform[]; platformId: number; onClose: () => void; onSaved: (id: number) => void }) {
-  const [pid, setPid] = useState(platformId);
-  const [key, setKey] = useState("");
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [review, setReview] = useState(true);
+export function BusinessModal({
+  platforms,
+  platformId,
+  business,
+  onClose,
+  onSaved,
+}: {
+  platforms: Platform[];
+  platformId: number;
+  business?: Business;
+  onClose: () => void;
+  onSaved: (b: Business) => void;
+}) {
+  const [pid, setPid] = useState(business?.platform_id ?? platformId);
+  const [key, setKey] = useState(business?.key ?? "");
+  const [name, setName] = useState(business?.name ?? "");
+  const [description, setDescription] = useState(business?.description ?? "");
+  const [review, setReview] = useState(business?.require_review ?? true);
   const [error, setError] = useState("");
   const save = async () => {
     try {
-      const b = await api.createBusiness({ platform_id: pid, key, name, description, require_review: review });
-      onSaved(b.id);
+      const body = { platform_id: pid, key, name, description, require_review: review };
+      onSaved(business ? await api.updateBusiness(business.id, body) : await api.createBusiness(body));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   };
   return (
     <Modal
-      title="New business"
+      title={business ? `Edit ${business.name}` : "New business"}
       onClose={onClose}
       footer={
         <>
@@ -190,12 +378,12 @@ function BusinessModal({ platforms, platformId, onClose, onSaved }: { platforms:
             Cancel
           </button>
           <button className="btn btn-primary" onClick={save}>
-            Create
+            {business ? "Save" : "Create"}
           </button>
         </>
       }
     >
-      <Field label="Platform">
+      <Field label="Platform" hint={business ? "Moving a business keeps its own metrics; it then shares the new platform's metrics and defaults." : undefined}>
         <select className="input" value={pid} onChange={(e) => setPid(Number(e.target.value))}>
           {platforms.map((p) => (
             <option key={p.id} value={p.id}>
@@ -210,13 +398,13 @@ function BusinessModal({ platforms, platformId, onClose, onSaved }: { platforms:
           value={name}
           onChange={(e) => {
             setName(e.target.value);
-            if (!key || key === slug(name)) setKey(slug(e.target.value));
+            if (!business && (!key || key === slug(name))) setKey(slug(e.target.value));
           }}
-          placeholder="Search"
+          placeholder="Ads"
         />
       </Field>
       <Field label="Key" hint="Services send events with this key. It can't change later.">
-        <input className="input input-mono" value={key} onChange={(e) => setKey(e.target.value)} placeholder="search" />
+        <input className="input input-mono" value={key} disabled={!!business} onChange={(e) => setKey(e.target.value)} placeholder="ads" />
       </Field>
       <Field label="Description">
         <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} />

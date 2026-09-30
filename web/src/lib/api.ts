@@ -4,6 +4,10 @@ import type {
   AttrType,
   Diversion,
   DiversionDef,
+  Gradual,
+  LaunchedField,
+  LaunchRecord,
+  Rollout,
   MetricBrief,
   ParamUse,
   ParamValue,
@@ -127,6 +131,8 @@ export const api = {
   platform: (id: number) => request<Platform>("GET", `/platforms/${id}`),
   createPlatform: (p: { key: string; name: string; description: string }) => request<Platform>("POST", "/platforms", p),
   updatePlatform: (id: number, p: { key: string; name: string; description: string }) => request<Platform>("PUT", `/platforms/${id}`, p),
+  deletePlatform: (id: number) => request<void>("DELETE", `/platforms/${id}`),
+  deleteBusiness: (id: number) => request<void>("DELETE", `/businesses/${id}`),
 
   measures: (sc: Scope) => request<Measure[]>("GET", `${scopePath(sc)}/measures`),
   createMeasure: (sc: Scope, m: MeasureInput) => request<Measure>("POST", `${scopePath(sc)}/measures`, m),
@@ -173,9 +179,12 @@ export const api = {
   experiment: (id: number) => request<Experiment>("GET", `/experiments/${id}`),
   createExperiment: (e: ExperimentInput) => request<Experiment>("POST", "/experiments", e),
   updateExperiment: (id: number, e: ExperimentInput) => request<Experiment>("PUT", `/experiments/${id}`, e),
-  action: (id: number, action: string, body: { note?: string; variant_id?: number } = {}) =>
+  action: (id: number, action: string, body: { note?: string; variant_id?: number; gradual?: Gradual } = {}) =>
     request<Experiment>("POST", `/experiments/${id}/actions/${action}`, body),
-  setTraffic: (id: number, traffic_target: number) => request<Experiment>("PUT", `/experiments/${id}/traffic`, { traffic_target }),
+  setTraffic: (id: number, traffic_target: number, gradual?: Gradual) =>
+    request<Experiment>("PUT", `/experiments/${id}/traffic`, { traffic_target, gradual }),
+  rollouts: (id: number) => request<Rollout[]>("GET", `/experiments/${id}/rollouts`),
+  cancelRollout: (id: number, rid: number) => request<void>("DELETE", `/experiments/${id}/rollouts/${rid}`),
   addWhitelist: (id: number, unit_ids: string[], variant_id: number, note: string) =>
     request<void>("POST", `/experiments/${id}/whitelist`, { unit_ids, variant_id, note }),
   removeWhitelist: (id: number, unit: string) => request<void>("DELETE", `/experiments/${id}/whitelist/${encodeURIComponent(unit)}`),
@@ -201,6 +210,8 @@ export const api = {
   updateDiversion: (key: string, d: { name: string; description: string }) => request<void>("PUT", `/diversions/${key}`, d),
   deleteDiversion: (key: string) => request<void>("DELETE", `/diversions/${key}`),
   parameters: () => request<ParamValue[]>("GET", "/parameters"),
+  launchedConfig: () =>
+    request<{ businesses: { business: string; name: string; fields: LaunchedField[] }[]; history: LaunchRecord[] }>("GET", "/parameters/launched"),
 
   diagnose: (ids: Record<string, string>, business: string, attrs: Record<string, unknown>) =>
     request<{ snapshot_version: number; result: { hits: Hit[]; params: Record<string, unknown>; trace: Step[]; conflicts?: unknown[] } }>(

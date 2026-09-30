@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { LineChart } from "../components/LineChart";
 import { Empty, ErrorBox, Field, Icon, Loading, Modal, Tabs } from "../components/ui";
-import { api, type MeasureInput, type MetricInput } from "../lib/api";
+import { api, BASE, type MeasureInput, type MetricInput } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { fmtDateTime, fmtInt, fmtValue } from "../lib/format";
 import { useAsync, useDebounced } from "../lib/hooks";
@@ -675,11 +675,18 @@ export function Groups({ scope, groups, metrics, reload }: { scope: Scope; group
         </div>
       ) : (
         <div className="grid-3">
-          {groups.map((g) => (
-            <div key={g.id} className="card card-pad stack-sm">
+          {[...groups]
+            .sort((a, b) => Number(!!b.builtin) - Number(!!a.builtin))
+            .map((g) => (
+            <div key={g.id} className={`card card-pad stack-sm ${g.builtin ? "group-builtin" : ""}`}>
               <div className="row-between">
                 <h3>
                   {g.name} {g.is_default && <span className="badge b-good" title="Included in every experiment automatically">default</span>}{" "}
+                  {g.builtin && (
+                    <span className="badge" title="Every platform has this group. Add metrics to report them for every experiment of the platform.">
+                      built in
+                    </span>
+                  )}{" "}
                   <PlatformBadge on={g.inherited} />
                 </h3>
                 {canEdit && !g.inherited && (
@@ -687,7 +694,7 @@ export function Groups({ scope, groups, metrics, reload }: { scope: Scope; group
                     <button className="icon-btn" aria-label="Edit" onClick={() => setEditing(g)}>
                       <Icon name="edit" size={15} />
                     </button>
-                    <button
+                    {!g.builtin && <button
                       className="icon-btn"
                       aria-label="Delete"
                       onClick={async () => {
@@ -698,16 +705,30 @@ export function Groups({ scope, groups, metrics, reload }: { scope: Scope; group
                       }}
                     >
                       <Icon name="trash" size={15} />
-                    </button>
+                    </button>}
                   </div>
                 )}
               </div>
               {g.description && <p className="faint small">{g.description}</p>}
-              <ol style={{ margin: 0, paddingLeft: 18 }} className="small">
-                {g.metric_ids.map((id) => (
-                  <li key={id}>{byId.get(id)?.name ?? `#${id}`}</li>
-                ))}
-              </ol>
+              {g.metric_ids.length === 0 ? (
+                <div className="small faint">
+                  No metrics yet.{" "}
+                  {canEdit && !g.inherited &&
+                    (metrics.length === 0 ? (
+                      <Link to="?tab=metrics">Create a metric first</Link>
+                    ) : (
+                      <button className="btn btn-sm" onClick={() => setEditing(g)}>
+                        <Icon name="plus" /> Add metrics
+                      </button>
+                    ))}
+                </div>
+              ) : (
+                <ol style={{ margin: 0, paddingLeft: 18 }} className="small">
+                  {g.metric_ids.map((id) => (
+                    <li key={id}>{byId.get(id)?.name ?? `#${id}`}</li>
+                  ))}
+                </ol>
+              )}
             </div>
           ))}
         </div>
@@ -786,7 +807,8 @@ function GroupModal({
         <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} />
       </Field>
       <label className="check">
-        <input type="checkbox" checked={isDefault} onChange={(e) => setDefault(e.target.checked)} /> Default — include in every experiment of this{" "}
+        <input type="checkbox" checked={isDefault || !!group?.builtin} disabled={!!group?.builtin} onChange={(e) => setDefault(e.target.checked)} /> Default — include in
+        every experiment of this{" "}
         {scope.kind === "platform" ? "platform (all its businesses)" : "business"}
       </label>
       <div className="grid-2">
@@ -959,6 +981,29 @@ function Settings({ business, onSaved }: { business: Business; onSaved: (b: Busi
           }}
         >
           Save
+        </button>
+      </div>
+      <hr style={{ border: 0, borderTop: "1px solid var(--border)", width: "100%" }} />
+      <div className="row-between">
+        <div className="small muted">
+          {business.experiments > 0
+            ? `Has ${business.experiments} experiment(s), so it can't be deleted. Move it to another platform from the platform page.`
+            : "Delete this business with its measures, metrics, groups and events."}
+        </div>
+        <button
+          className="btn btn-danger btn-sm"
+          disabled={business.experiments > 0}
+          onClick={async () => {
+            if (!confirm(`Delete ${business.name}?`)) return;
+            try {
+              await api.deleteBusiness(business.id);
+              window.location.assign(`${BASE}/platforms/${business.platform_id}`);
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e));
+            }
+          }}
+        >
+          <Icon name="trash" /> Delete business
         </button>
       </div>
     </section>

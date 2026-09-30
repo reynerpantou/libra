@@ -270,3 +270,40 @@ func TestPriorityByStartTime(t *testing.T) {
 		t.Errorf("params %v conflicts %+v", r.Params, r.Conflicts)
 	}
 }
+
+func TestGradualLaunch(t *testing.T) {
+	mk := func(rollout int) *Snapshot {
+		e := &Experiment{ID: 1, LayerID: 1, Name: "launch", Status: StatusLaunched, Salt: "L", LaunchedVar: 2, LaunchRollout: rollout, Variants: twoVariants()}
+		return NewSnapshot(1, []*Layer{{ID: 1, Salt: "1"}}, []*Experiment{e})
+	}
+	count := func(s *Snapshot) (in []string) {
+		for i := 0; i < 4000; i++ {
+			u := fmt.Sprintf("u%d", i)
+			if len(s.Resolve(Request{UserID: u}, false).Hits) == 1 {
+				in = append(in, u)
+			}
+		}
+		return in
+	}
+	at30 := count(mk(300))
+	if n := len(at30); n < 1000 || n > 1400 {
+		t.Errorf("30%% rollout reached %d of 4000", n)
+	}
+	// Raising the share keeps everyone already in.
+	at60 := map[string]bool{}
+	for _, u := range count(mk(600)) {
+		at60[u] = true
+	}
+	for _, u := range at30 {
+		if !at60[u] {
+			t.Fatalf("%s dropped out when the rollout grew", u)
+		}
+	}
+	if n := len(count(mk(0))); n != 4000 {
+		t.Errorf("unset rollout means everyone, got %d", n)
+	}
+	r := mk(300).Resolve(Request{}, true)
+	if len(r.Hits) != 0 || r.Trace[0].Outcome != "missing_id" {
+		t.Errorf("partial launch without an id: %+v", r)
+	}
+}

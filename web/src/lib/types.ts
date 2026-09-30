@@ -98,8 +98,58 @@ export interface MetricGroup {
   name: string;
   description: string;
   is_default: boolean;
+  builtin?: boolean; // the platform's own default group
   metric_ids: number[];
   inherited?: boolean;
+}
+
+export interface Gradual {
+  start?: number; // per mille to begin at
+  step: number; // per mille per interval
+  interval_minutes: number;
+}
+
+export interface Rollout {
+  id: number;
+  experiment_id: number;
+  kind: "traffic" | "launch";
+  start_value: number;
+  target: number;
+  step: number;
+  interval_secs: number;
+  next_at: string;
+  status: "active" | "done" | "cancelled" | "blocked";
+  note: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LaunchedField {
+  path: string;
+  value: unknown;
+  experiment_id: number;
+  experiment: string;
+  variant: string;
+  launched_at: string;
+  rollout: number;
+  targeted: boolean;
+  replaced: { path: string; value: unknown; experiment_id: number; experiment: string; launched_at: string }[];
+}
+
+export interface LaunchRecord {
+  experiment_id: number;
+  experiment: string;
+  business: string;
+  status: Status;
+  variant: string;
+  variant_name: string;
+  launched_at: string;
+  rollout: number;
+  targeted: boolean;
+  params: Record<string, unknown>;
+  live_fields: number;
+  fields: number;
 }
 
 export interface MetricBrief {
@@ -225,6 +275,7 @@ export interface Experiment {
   review_note: string;
   reviewer_name: string;
   launched_variant_id: number | null;
+  launch_rollout: number; // per mille of units the launched variant serves
   started_at: string | null;
   ended_at: string | null;
   launched_at: string | null;

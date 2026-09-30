@@ -68,7 +68,7 @@ var demoPlatform = scopeSpec{
 		{"error_rate", "Error rate", "Failed backend requests", "api_errors / api_requests", "percent", "decrease", 3},
 	},
 	groups: []groupSpec{
-		{"Platform guardrails", "Applied to every experiment on the platform", true, []string{"gmv_per_user_total", "conversion", "avg_latency_ms", "error_rate"}},
+		{"Default metrics", "Guardrails applied to every experiment on the platform", true, []string{"gmv_per_user_total", "conversion", "avg_latency_ms", "error_rate"}},
 	},
 }
 
@@ -148,6 +148,12 @@ func insertScope(ctx context.Context, tx *sql.Tx, sc scopeSpec, businessID, plat
 		}
 		metricIDs[sc.key+"/"+m.key] = id
 	}
+	if platformID != nil {
+		// A platform created in the UI already has an empty default group.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM metric_groups WHERE platform_id = $1 AND builtin AND metric_ids = '{}'`, platformID); err != nil {
+			return err
+		}
+	}
 	for _, g := range sc.groups {
 		ids := []int64{}
 		for _, k := range g.keys {
@@ -158,8 +164,8 @@ func insertScope(ctx context.Context, tx *sql.Tx, sc scopeSpec, businessID, plat
 			ids = append(ids, id)
 		}
 		var id int64
-		if err := tx.QueryRowContext(ctx, `INSERT INTO metric_groups (business_id, platform_id, name, description, is_default, metric_ids) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-			businessID, platformID, g.name, g.desc, g.isDefault, ids).Scan(&id); err != nil {
+		if err := tx.QueryRowContext(ctx, `INSERT INTO metric_groups (business_id, platform_id, name, description, is_default, builtin, metric_ids) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+			businessID, platformID, g.name, g.desc, g.isDefault, g.isDefault && platformID != nil, ids).Scan(&id); err != nil {
 			return err
 		}
 		groupIDs[sc.key+"/"+g.name] = id
@@ -290,6 +296,31 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 			},
 		},
 		{
+			"search", "Ads per page v1", "Capping ads at 2 per page and labelling them keeps CTR healthy.",
+			"search_ui", assign.StatusLaunched, "", "capped", []string{"search/Ads health"}, 0, assign.Targeting{},
+			[]variant{
+				{"control", "No cap", true, 500, map[string]any{"search": map[string]any{"ads": map[string]any{"max_per_page": 6, "label": "Ad"}}}},
+				{"capped", "2 per page, labelled", false, 500, map[string]any{"search": map[string]any{"ads": map[string]any{"max_per_page": 2, "label": "Sponsored"}}}},
+			},
+		},
+		{
+			"search", "Legacy ranking weights", "Old ranking weights, launched and later retired.",
+			"search_ranking", assign.StatusArchived, "", "tuned", []string{"search/Product"}, 0, assign.Targeting{},
+			[]variant{
+				{"control", "Defaults", true, 500, map[string]any{"search": map[string]any{"ranking": map[string]any{"weights": map[string]any{"text": 1.0, "sales": 0.5}}}}},
+				{"tuned", "Tuned", false, 500, map[string]any{"search": map[string]any{"ranking": map[string]any{"weights": map[string]any{"text": 0.8, "sales": 0.7}}}}},
+			},
+		},
+		{
+			"reco", "Price badge on feed cards", "A price-drop badge on feed cards raises feed CTR.",
+			"feed_ranking", assign.StatusLaunched, "", "badge", []string{"reco/Product"}, 0,
+			assign.Targeting{Groups: [][]assign.Rule{{{Attr: "region", Op: "in", Values: []string{"ID", "TH"}}}}},
+			[]variant{
+				{"control", "No badge", true, 500, map[string]any{"reco": map[string]any{"card": map[string]any{"price_badge": false}}}},
+				{"badge", "Price-drop badge", false, 500, map[string]any{"reco": map[string]any{"card": map[string]any{"price_badge": true, "badge_color": "red"}}}},
+			},
+		},
+		{
 			"search", "Query autocomplete", "Showing autocomplete suggestions increases searches per user.",
 			"search_ranking", assign.StatusDraft, "", "", []string{"search/Front end"}, 300, assign.Targeting{},
 			[]variant{
@@ -298,6 +329,7 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 			},
 		},
 	}
+	expIDs := map[string]int64{}
 	for i, e := range exps {
 		targeting, _ := json.Marshal(e.targeting)
 		var id int64
@@ -348,6 +380,7 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 			groups, startedAt, start.Add(-24*time.Hour)).Scan(&id); err != nil {
 			return err
 		}
+		expIDs[e.name] = id
 		if e.auto != "" {
 			if _, err := tx.ExecContext(ctx, `UPDATE layers SET name = $2 WHERE id = $1`, layerID, fmt.Sprintf("auto-%d", id)); err != nil {
 				return err
@@ -371,6 +404,31 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 			id, owner, e.status); err != nil {
 			return err
 		}
+	}
+	// Launch history: when each was released, and rollouts in progress —
+	// a launch still ramping to everyone, and a running experiment whose
+	// traffic ramps up step by step.
+	for _, l := range []struct {
+		name    string
+		daysAgo int
+		rollout int
+	}{{"Legacy ranking weights", 60, 1000}, {"Ads per page v1", 40, 1000}, {"Results per page", 16, 1000}, {"Price badge on feed cards", 2, 300}} {
+		at := time.Now().UTC().AddDate(0, 0, -l.daysAgo)
+		if _, err := tx.ExecContext(ctx, `UPDATE experiments SET launched_at = $2, ended_at = $2, started_at = $3, launch_rollout = $4 WHERE id = $1`,
+			expIDs[l.name], at, at.AddDate(0, 0, -14), l.rollout); err != nil {
+			return err
+		}
+	}
+	var by any
+	if ownerID > 0 {
+		by = ownerID
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO rollouts (experiment_id, kind, start_value, target, step, interval_secs, next_at, note, created_by)
+		VALUES ($1, 'launch', 100, 1000, 100, 3600, now() + interval '40 minutes', 'at 30.0%', $3),
+		       ($2, 'traffic', 600, 1000, 50, 7200, now() + interval '75 minutes', 'at 80.0%', $3)`,
+		expIDs["Price badge on feed cards"], expIDs["Feed model two-tower"], by); err != nil {
+		return err
 	}
 	if err := serving.Bump(ctx, tx); err != nil {
 		return err

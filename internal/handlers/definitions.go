@@ -567,6 +567,7 @@ type MetricGroup struct {
 	Name        string  `json:"name"`
 	Description string  `json:"description"`
 	IsDefault   bool    `json:"is_default"` // included in every experiment of its business / platform
+	Builtin     bool    `json:"builtin"`    // the platform's own default group: can't be deleted
 	MetricIDs   []int64 `json:"metric_ids"`
 	Inherited   bool    `json:"inherited"`
 }
@@ -574,7 +575,7 @@ type MetricGroup struct {
 const groupSelect = `
 	SELECT g.id, COALESCE(g.business_id, 0), COALESCE(g.platform_id, 0), COALESCE(b.name, p.name),
 	       CASE WHEN g.business_id IS NULL THEN 'platform' ELSE 'business' END, COALESCE(bp.name, p.name, ''),
-	       g.name, g.description, g.is_default, array_to_string(g.metric_ids, ',')
+	       g.name, g.description, g.is_default, g.builtin, array_to_string(g.metric_ids, ',')
 	FROM metric_groups g
 	LEFT JOIN businesses b ON b.id = g.business_id
 	LEFT JOIN platforms bp ON bp.id = b.platform_id
@@ -590,7 +591,7 @@ func (s *Server) queryGroups(ctx context.Context, where string, args ...any) ([]
 	for rows.Next() {
 		var g MetricGroup
 		var ids string
-		if err := rows.Scan(&g.ID, &g.BusinessID, &g.PlatformID, &g.Owner, &g.OwnerKind, &g.PlatformKey, &g.Name, &g.Description, &g.IsDefault, &ids); err != nil {
+		if err := rows.Scan(&g.ID, &g.BusinessID, &g.PlatformID, &g.Owner, &g.OwnerKind, &g.PlatformKey, &g.Name, &g.Description, &g.IsDefault, &g.Builtin, &ids); err != nil {
 			return nil, err
 		}
 		g.MetricIDs = parseIDs(ids)
@@ -741,7 +742,8 @@ func (s *Server) UpdateMetricGroup(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, msg)
 		return
 	}
-	_, err = s.DB.ExecContext(r.Context(), `UPDATE metric_groups SET name = $2, description = $3, is_default = $4, metric_ids = $5 WHERE id = $1`,
+	// The platform's own default group always stays a default.
+	_, err = s.DB.ExecContext(r.Context(), `UPDATE metric_groups SET name = $2, description = $3, is_default = $4 OR builtin, metric_ids = $5 WHERE id = $1`,
 		id, req.Name, req.Description, req.IsDefault, req.MetricIDs)
 	if isUniqueViolation(err) {
 		writeError(w, http.StatusConflict, "conflict", "a metric group with that name exists")
@@ -757,6 +759,15 @@ func (s *Server) UpdateMetricGroup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) DeleteMetricGroup(w http.ResponseWriter, r *http.Request) {
 	id, _ := pathID(r, "id")
+	var builtin bool
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT builtin FROM metric_groups WHERE id = $1`, id).Scan(&builtin); err != nil {
+		notFound(w, "metric group")
+		return
+	}
+	if builtin {
+		badRequest(w, "the platform's default group can't be deleted; remove its metrics instead")
+		return
+	}
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		serverError(w, r, err)

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -131,8 +132,17 @@ func (s *Server) UpdateBusiness(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "name is required")
 		return
 	}
-	res, err := s.DB.ExecContext(r.Context(), `UPDATE businesses SET name = $2, description = $3, require_review = $4 WHERE id = $1`,
-		id, name, strings.TrimSpace(req.Description), req.RequireReview)
+	// Moving to another platform is allowed: its definitions come along,
+	// and it picks up the new platform's shared metrics and defaults.
+	if req.PlatformID != 0 {
+		var n int
+		if s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM platforms WHERE id = $1`, req.PlatformID).Scan(&n); n == 0 {
+			badRequest(w, "unknown platform")
+			return
+		}
+	}
+	res, err := s.DB.ExecContext(r.Context(), `UPDATE businesses SET name = $2, description = $3, require_review = $4, platform_id = COALESCE(NULLIF($5, 0), platform_id) WHERE id = $1`,
+		id, name, strings.TrimSpace(req.Description), req.RequireReview, req.PlatformID)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -144,6 +154,32 @@ func (s *Server) UpdateBusiness(w http.ResponseWriter, r *http.Request) {
 	_ = audit(r.Context(), s.DB, user(r).ID, 0, "business", id, "update", "", "", req)
 	b, _ := s.loadBusiness(r, id)
 	writeJSON(w, http.StatusOK, b)
+}
+
+// DeleteBusiness removes a business with no experiments, along with its
+// measures, metrics, groups and events.
+func (s *Server) DeleteBusiness(w http.ResponseWriter, r *http.Request) {
+	id, _ := pathID(r, "id")
+	var n int
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM experiments WHERE business_id = $1`, id).Scan(&n); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if n > 0 {
+		badRequest(w, fmt.Sprintf("the business has %d experiment(s); a business with experiments can't be deleted (their history needs it)", n))
+		return
+	}
+	res, err := s.DB.ExecContext(r.Context(), `DELETE FROM businesses WHERE id = $1`, id)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		notFound(w, "business")
+		return
+	}
+	_ = audit(r.Context(), s.DB, user(r).ID, 0, "business", id, "delete", "", "", nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- event exploration ----

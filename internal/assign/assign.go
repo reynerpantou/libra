@@ -130,7 +130,10 @@ type Experiment struct {
 	Whitelist   map[string]int64 // unit id (of the layer's diversion) -> forced variant id
 	LaunchedVar int64            // for launched experiments
 	LaunchOrder int64            // launch time (unix) — later launches override earlier ones
-	StartOrder  int64            // start time (unix); 0 = never started
+	// LaunchRollout is the share of units (per mille) a launched variant
+	// serves while it rolls out gradually; 1000 (or 0, unset) is everyone.
+	LaunchRollout int
+	StartOrder    int64 // start time (unix); 0 = never started
 }
 
 type Layer struct {
@@ -184,6 +187,10 @@ func LayerBucket(layerSalt, unit string) int { return Hash("layer:" + layerSalt 
 
 // VariantBucket is the unit's bucket inside an experiment.
 func VariantBucket(expSalt, unit string) int { return Hash("exp:" + expSalt + ":" + unit) }
+
+// LaunchBucket is the unit's bucket for a gradual launch: units below the
+// rollout share get the launched variant, so raising it keeps everyone in.
+func LaunchBucket(expSalt, unit string) int { return Hash("launch:" + expSalt + ":" + unit) }
 
 // PickVariant chooses a variant by per-mille weights.
 func PickVariant(vs []Variant, bucket int) *Variant {
@@ -314,13 +321,28 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 			continue
 		}
 		if e.Status == StatusLaunched {
+			if e.LaunchRollout > 0 && e.LaunchRollout < Buckets {
+				if unit == "" {
+					record("missing_id", "the launch is rolling out by "+diversion+", and the request has none")
+					continue
+				}
+				if b := LaunchBucket(e.Salt, unit); b >= e.LaunchRollout {
+					step.VariantBucket = b
+					record("not_in_rollout", fmt.Sprintf("launch is rolling out to %.1f%% of units; this unit's bucket %d is not included yet", float64(e.LaunchRollout)/10, b))
+					continue
+				}
+			}
 			if v := variantByID(e, e.LaunchedVar); v != nil {
 				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, SourceLaunch, diversion, unit})
 				launched = append(launched, struct {
 					e *Experiment
 					v *Variant
 				}{e, v})
-				record("launched", "fully launched variant "+v.Key+" applies to everyone targeted")
+				if e.LaunchRollout > 0 && e.LaunchRollout < Buckets {
+					record("launched", fmt.Sprintf("launched variant %s, rolling out to %.1f%% of units", v.Key, float64(e.LaunchRollout)/10))
+				} else {
+					record("launched", "fully launched variant "+v.Key+" applies to everyone targeted")
+				}
 			} else {
 				record("not_running", "launched variant is missing")
 			}

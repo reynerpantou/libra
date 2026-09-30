@@ -71,6 +71,7 @@ func serve(db *sql.DB, cfg config.Config) {
 	go purgeSessions(ctx, db)
 
 	s := handlers.New(db, cfg, store, logger, sched)
+	go s.RolloutLoop(ctx, 30*time.Second)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           routes(s, db, cfg),
@@ -131,6 +132,7 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("POST /businesses", admin(s.CreateBusiness))
 	api.Handle("GET /businesses/{id}", viewer(s.GetBusiness))
 	api.Handle("PUT /businesses/{id}", admin(s.UpdateBusiness))
+	api.Handle("DELETE /businesses/{id}", admin(s.DeleteBusiness))
 	api.Handle("GET /businesses/{id}/measures", viewer(s.ListMeasures))
 	api.Handle("POST /businesses/{id}/measures", editor(s.CreateMeasure))
 	api.Handle("PUT /measures/{id}", editor(s.UpdateMeasure))
@@ -149,6 +151,7 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("POST /platforms", admin(s.CreatePlatform))
 	api.Handle("GET /platforms/{pid}", viewer(s.GetPlatform))
 	api.Handle("PUT /platforms/{pid}", admin(s.UpdatePlatform))
+	api.Handle("DELETE /platforms/{pid}", admin(s.DeletePlatform))
 	api.Handle("GET /platforms/{pid}/measures", viewer(s.ListMeasures))
 	api.Handle("POST /platforms/{pid}/measures", editor(s.CreateMeasure))
 	api.Handle("GET /platforms/{pid}/metrics", viewer(s.ListMetrics))
@@ -172,6 +175,8 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("PUT /experiments/{id}", editor(s.UpdateExperiment))
 	api.Handle("POST /experiments/{id}/actions/{action}", editor(s.ExperimentAction))
 	api.Handle("PUT /experiments/{id}/traffic", editor(s.SetTraffic))
+	api.Handle("GET /experiments/{id}/rollouts", viewer(s.ListRollouts))
+	api.Handle("DELETE /experiments/{id}/rollouts/{rid}", editor(s.CancelRollout))
 	api.Handle("POST /experiments/{id}/whitelist", editor(s.AddWhitelist))
 	api.Handle("DELETE /experiments/{id}/whitelist/{unit}", editor(s.RemoveWhitelist))
 	api.Handle("GET /experiments/{id}/history", viewer(s.ExperimentHistory))
@@ -194,6 +199,7 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("POST /tools/diagnose", viewer(s.Diagnose))
 	api.Handle("GET /tools/params", viewer(s.ParamSearch))
 	api.Handle("GET /parameters", viewer(s.ListParameters))
+	api.Handle("GET /parameters/launched", viewer(s.LaunchedConfig))
 	api.Handle("GET /pipeline", viewer(s.PipelineStatus))
 	api.Handle("POST /pipeline/run", editor(s.RunPipeline))
 
