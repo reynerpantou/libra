@@ -24,6 +24,7 @@ type Layer struct {
 	ID          int64         `json:"id"`
 	Name        string        `json:"name"`
 	Description string        `json:"description"`
+	Diversion   string        `json:"diversion"` // user_id | device_id
 	Used        int           `json:"used_buckets"`
 	Holders     []LayerHolder `json:"holders"`
 }
@@ -36,7 +37,7 @@ type LayerHolder struct {
 }
 
 func (s *Server) ListLayers(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.DB.QueryContext(r.Context(), `SELECT id, name, description FROM layers ORDER BY name`)
+	rows, err := s.DB.QueryContext(r.Context(), `SELECT id, name, description, diversion FROM layers ORDER BY name`)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -45,7 +46,7 @@ func (s *Server) ListLayers(w http.ResponseWriter, r *http.Request) {
 	byID := map[int64]*Layer{}
 	for rows.Next() {
 		l := &Layer{Holders: []LayerHolder{}}
-		if err := rows.Scan(&l.ID, &l.Name, &l.Description); err != nil {
+		if err := rows.Scan(&l.ID, &l.Name, &l.Description, &l.Diversion); err != nil {
 			rows.Close()
 			serverError(w, r, err)
 			return
@@ -84,6 +85,7 @@ func (s *Server) CreateLayer(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		Diversion   string `json:"diversion"`
 	}
 	if !decodeOr400(w, r, &req) {
 		return
@@ -93,14 +95,21 @@ func (s *Server) CreateLayer(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "name is required")
 		return
 	}
+	if req.Diversion == "" {
+		req.Diversion = assign.DiversionUser
+	}
+	if req.Diversion != assign.DiversionUser && req.Diversion != assign.DiversionDevice {
+		badRequest(w, "diversion must be user_id or device_id")
+		return
+	}
 	salt, err := auth.NewToken()
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
 	var id int64
-	err = s.DB.QueryRowContext(r.Context(), `INSERT INTO layers (name, description, salt) VALUES ($1, $2, $3) RETURNING id`,
-		name, strings.TrimSpace(req.Description), salt[:16]).Scan(&id)
+	err = s.DB.QueryRowContext(r.Context(), `INSERT INTO layers (name, description, salt, diversion) VALUES ($1, $2, $3, $4) RETURNING id`,
+		name, strings.TrimSpace(req.Description), salt[:16], req.Diversion).Scan(&id)
 	if isUniqueViolation(err) {
 		writeError(w, http.StatusConflict, "conflict", "a layer with that name exists")
 		return
@@ -110,7 +119,7 @@ func (s *Server) CreateLayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = audit(r.Context(), s.DB, user(r).ID, 0, "layer", id, "create", "", "", req)
-	writeJSON(w, http.StatusCreated, Layer{ID: id, Name: name, Description: req.Description, Holders: []LayerHolder{}})
+	writeJSON(w, http.StatusCreated, Layer{ID: id, Name: name, Description: req.Description, Diversion: req.Diversion, Holders: []LayerHolder{}})
 }
 
 func (s *Server) UpdateLayer(w http.ResponseWriter, r *http.Request) {
@@ -172,7 +181,8 @@ type Experiment struct {
 	Status            string           `json:"status"`
 	TrafficTarget     int              `json:"traffic_target"` // per mille
 	TrafficHeld       int              `json:"traffic_held"`
-	Targeting         []assign.Rule    `json:"targeting"`
+	Targeting         assign.Targeting `json:"targeting"`
+	LayerDiversion    string           `json:"layer_diversion"`
 	MetricGroupID     *int64           `json:"metric_group_id"`
 	ReviewNote        string           `json:"review_note"`
 	ReviewerName      string           `json:"reviewer_name"`
@@ -189,7 +199,7 @@ type Experiment struct {
 }
 
 const experimentSelect = `
-	SELECT e.id, e.business_id, b.key, b.name, e.layer_id, l.name, e.name, e.hypothesis, e.description,
+	SELECT e.id, e.business_id, b.key, b.name, e.layer_id, l.name, l.diversion, e.name, e.hypothesis, e.description,
 	       e.owner_id, COALESCE(NULLIF(o.display_name, ''), o.username, ''), e.status, e.traffic_target, cardinality(e.buckets),
 	       e.targeting, e.metric_group_id, e.review_note, COALESCE(NULLIF(rv.display_name, ''), rv.username, ''),
 	       e.launched_variant_id, e.started_at, e.ended_at, e.launched_at, e.created_at, e.updated_at,
@@ -203,7 +213,7 @@ const experimentSelect = `
 func scanExperiment(sc interface{ Scan(...any) error }) (Experiment, error) {
 	var e Experiment
 	var targeting []byte
-	err := sc.Scan(&e.ID, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &e.LayerID, &e.LayerName, &e.Name, &e.Hypothesis, &e.Description,
+	err := sc.Scan(&e.ID, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.Name, &e.Hypothesis, &e.Description,
 		&e.OwnerID, &e.OwnerName, &e.Status, &e.TrafficTarget, &e.TrafficHeld,
 		&targeting, &e.MetricGroupID, &e.ReviewNote, &e.ReviewerName,
 		&e.LaunchedVariantID, &e.StartedAt, &e.EndedAt, &e.LaunchedAt, &e.CreatedAt, &e.UpdatedAt, &e.Units)
@@ -211,9 +221,6 @@ func scanExperiment(sc interface{ Scan(...any) error }) (Experiment, error) {
 		return e, err
 	}
 	_ = json.Unmarshal(targeting, &e.Targeting)
-	if e.Targeting == nil {
-		e.Targeting = []assign.Rule{}
-	}
 	return e, nil
 }
 
@@ -321,16 +328,16 @@ func (s *Server) GetExperiment(w http.ResponseWriter, r *http.Request) {
 }
 
 type experimentRequest struct {
-	BusinessID    int64         `json:"business_id"`
-	LayerID       int64         `json:"layer_id"`
-	Name          string        `json:"name"`
-	Hypothesis    string        `json:"hypothesis"`
-	Description   string        `json:"description"`
-	OwnerID       *int64        `json:"owner_id"`
-	TrafficTarget int           `json:"traffic_target"`
-	Targeting     []assign.Rule `json:"targeting"`
-	MetricGroupID *int64        `json:"metric_group_id"`
-	Variants      []VariantIn   `json:"variants"`
+	BusinessID    int64            `json:"business_id"`
+	LayerID       int64            `json:"layer_id"`
+	Name          string           `json:"name"`
+	Hypothesis    string           `json:"hypothesis"`
+	Description   string           `json:"description"`
+	OwnerID       *int64           `json:"owner_id"`
+	TrafficTarget int              `json:"traffic_target"`
+	Targeting     assign.Targeting `json:"targeting"`
+	MetricGroupID *int64           `json:"metric_group_id"`
+	Variants      []VariantIn      `json:"variants"`
 }
 
 var variantKey = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
@@ -349,10 +356,7 @@ func (req *experimentRequest) validate() string {
 	if req.TrafficTarget < 0 || req.TrafficTarget > assign.Buckets {
 		return "traffic must be between 0% and 100%"
 	}
-	if req.Targeting == nil {
-		req.Targeting = []assign.Rule{}
-	}
-	if err := assign.ValidateRules(req.Targeting); err != nil {
+	if err := assign.ValidateTargeting(req.Targeting, nil); err != nil {
 		return err.Error()
 	}
 	if len(req.Variants) < 2 || len(req.Variants) > 10 {
@@ -400,7 +404,7 @@ func (s *Server) CreateExperiment(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, msg)
 		return
 	}
-	if msg := s.checkRefs(r.Context(), &req); msg != "" {
+	if msg := s.checkRefs(r.Context(), &req, 0); msg != "" {
 		badRequest(w, msg)
 		return
 	}
@@ -451,7 +455,7 @@ func (s *Server) CreateExperiment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, e)
 }
 
-func (s *Server) checkRefs(ctx context.Context, req *experimentRequest) string {
+func (s *Server) checkRefs(ctx context.Context, req *experimentRequest, self int64) string {
 	var n int
 	if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM businesses WHERE id = $1`, req.BusinessID).Scan(&n); n == 0 {
 		return "that business doesn't exist"
@@ -469,7 +473,35 @@ func (s *Server) checkRefs(ctx context.Context, req *experimentRequest) string {
 			return "that owner doesn't exist"
 		}
 	}
+	if attrs := req.Targeting.Attrs(); len(attrs) > 0 {
+		known, err := s.attributeKeys(ctx)
+		if err != nil {
+			return "could not check targeting attributes"
+		}
+		if err := assign.ValidateTargeting(req.Targeting, known); err != nil {
+			return err.Error()
+		}
+	}
+	free, err := s.layerFree(ctx, s.DB, req.LayerID, self)
+	if err != nil {
+		return "could not check the layer's free traffic"
+	}
+	if req.TrafficTarget > free {
+		return fmt.Sprintf("the layer only has %s free; lower the traffic or free the layer first", pct(free))
+	}
 	return ""
+}
+
+// layerFree is how many buckets of a layer aren't held by other running or
+// paused experiments.
+func (s *Server) layerFree(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, layerID, except int64) (int, error) {
+	var used int
+	err := q.QueryRowContext(ctx, `
+		SELECT COALESCE(sum(cardinality(buckets)), 0) FROM experiments
+		WHERE layer_id = $1 AND id <> $2 AND status IN ('active', 'paused')`, layerID, except).Scan(&used)
+	return assign.Buckets - used, err
 }
 
 // writeVariants replaces an experiment's variants, keeping ids of variants
@@ -532,7 +564,7 @@ func (s *Server) UpdateExperiment(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, msg)
 		return
 	}
-	if msg := s.checkRefs(r.Context(), &req); msg != "" {
+	if msg := s.checkRefs(r.Context(), &req, id); msg != "" {
 		badRequest(w, msg)
 		return
 	}
@@ -844,6 +876,18 @@ func (s *Server) SetTraffic(w http.ResponseWriter, r *http.Request) {
 	case assign.StatusInReview:
 		badRequest(w, "withdraw the review before changing traffic")
 		return
+	}
+	if e.Status != assign.StatusActive && e.Status != assign.StatusPaused {
+		// Not holding buckets yet; still don't plan more than the layer has.
+		free, err := s.layerFree(r.Context(), s.DB, e.LayerID, id)
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		if req.TrafficTarget > free {
+			badRequest(w, fmt.Sprintf("the layer only has %s free", pct(free)))
+			return
+		}
 	}
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {

@@ -30,7 +30,7 @@ func TestOwnerClaim(t *testing.T) {
 
 	// New install: a link is issued.
 	link, err := NewSetupLink(ctx, db, "http://x")
-	if err != nil || !strings.HasPrefix(link, "http://x/setup#") {
+	if err != nil || !strings.HasPrefix(link, "http://x/libra/setup#") {
 		t.Fatalf("link %q err %v", link, err)
 	}
 	// Unverified email can't claim.

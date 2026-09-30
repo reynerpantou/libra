@@ -12,6 +12,7 @@ const outcomeText: Record<string, [string, string]> = {
   not_running: ["Not running", ""],
   not_in_traffic: ["Not in traffic", ""],
   targeting_failed: ["Targeting excluded", "b-warn"],
+  missing_id: ["Missing id", "b-warn"],
   other_business: ["Other business", ""],
 };
 
@@ -40,6 +41,7 @@ export default function Tools() {
 
 function Diagnose() {
   const [unit, setUnit] = useState("");
+  const [device, setDevice] = useState("");
   const [business, setBusiness] = useState("");
   const [attrs, setAttrs] = useState('{\n  "region": "ID",\n  "os": "android"\n}');
   const [error, setError] = useState("");
@@ -57,7 +59,7 @@ function Diagnose() {
     }
     setBusy(true);
     try {
-      const r = await api.diagnose(unit, business, parsed);
+      const r = await api.diagnose(unit, device, business, parsed);
       setRes({ version: r.snapshot_version, ...r.result, trace: r.result.trace ?? [] });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -68,8 +70,11 @@ function Diagnose() {
   return (
     <div className="grid-2" style={{ gridTemplateColumns: "minmax(0, 360px) minmax(0, 1fr)", alignItems: "start" }}>
       <section className="card card-pad stack">
-        <Field label="Unit id" hint="The user or device id your service sends to resolve.">
+        <Field label="User id" hint="Used by layers that split by user.">
           <input className="input input-mono" value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="demo-search-000042" />
+        </Field>
+        <Field label="Device id" hint="Used by layers that split by device.">
+          <input className="input input-mono" value={device} onChange={(e) => setDevice(e.target.value)} placeholder="dev-search-000042" />
         </Field>
         <Field label="Business">
           <select className="input" value={business} onChange={(e) => setBusiness(e.target.value)}>
@@ -86,7 +91,7 @@ function Diagnose() {
         </Field>
         <ErrorBox error={error} />
         <div>
-          <button className="btn btn-primary" disabled={!unit.trim() || busy} onClick={run}>
+          <button className="btn btn-primary" disabled={(!unit.trim() && !device.trim()) || busy} onClick={run}>
             Diagnose
           </button>
         </div>

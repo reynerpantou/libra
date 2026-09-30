@@ -32,6 +32,11 @@ docker compose up -d postgres   # or point LIBRA_DATABASE_URL at any Postgres
 ./libra                         # serve on :8080 and print the owner setup link
 ```
 
+Libra lives under **`/libra`**: the app at `http://localhost:8080/libra/`, the
+API at `/libra/api/…` (anything else redirects there), so other apps can share
+the domain. With Google sign-in, register
+`<LIBRA_PUBLIC_URL>/libra/api/auth/google/callback` as the redirect URI.
+
 `libra demo` creates a **Search** business with the metrics below, two traffic
 layers, three experiments, and about 700k simulated events. The simulated
 treatments have real built-in effects, so the reports show real results. For
@@ -52,7 +57,7 @@ owner, every start prints a one-time setup link to the server's log:
   ┌─ Libra has no owner yet ─────────────────────────────────────────
   │ Open this link and sign in with Google or Apple to become the owner:
   │
-  │   http://localhost:8080/setup#…
+  │   http://localhost:8080/libra/setup#…
 ```
 
 Open it and continue with Google or Apple; that account becomes the owner
@@ -67,12 +72,13 @@ People** by email. For recovery, `libra sign-in-link <username>`
 | Concept | What it is |
 |---|---|
 | **Business** | A product area (search, feed, checkout) that sends its own events and owns its metrics. |
-| **Event** | A raw fact pushed by a service: `{business, event, unit_id, ts, value, props}`. |
+| **Event** | A raw fact pushed by a service: `{business, event, user_id, device_id, ts, value, props}` (at least one of the ids). |
 | **Measure** | Events → one number per unit per day: `count`, `sum`, `max` or `any` (0/1) of an event, with optional property filters. Example: *search_gmv = sum(value) of `order` where `source = search`*. |
 | **Metric** | A **formula** over measures, the built-in `users` (exposed units), and other metrics. Edit it any time; reports use it immediately. |
 | **Metric group** | An ordered set of metrics, used as a report template for an experiment. |
-| **Layer** | 1,000 traffic buckets. Experiments in the same layer never share a unit; experiments in different layers overlap independently. |
-| **Experiment** | Variants (with JSON parameters and weights), a traffic %, targeting rules, test users, and a lifecycle with review. |
+| **Layer** | 1,000 traffic buckets and a **diversion**: whether it splits by `user_id` or `device_id`. Experiments in the same layer never share a unit; experiments in different layers overlap independently. |
+| **Experiment** | Variants (with JSON parameters and weights), a traffic %, targeting, test users, and a lifecycle with review. Ids are random 15-digit numbers, so they can't be guessed or walked. |
+| **Targeting attribute** | A request attribute experiments may target on (`device`, `app_version`, `region`…), with a type and known values, managed under **Targeting attributes**. |
 
 ### The demo's search metrics
 
@@ -125,8 +131,26 @@ People** by email. For recovery, `libra sign-in-link <username>`
 - **Launch** serves the winning variant's parameters to everyone who matches
   the targeting, and releases the experiment's traffic. Running experiments can
   still override launched parameters.
+- A draft can't plan more traffic than its layer has free.
+- **Targeting** is OR of AND-groups over registered attributes, e.g.
+  `(device = android AND app_version ≥ 3.400) OR (device = ios AND app_version ≥ 2.300) OR device in (desktop, mobile)`.
+  Versions compare part by part (`10.2 > 9.9`).
+- **Diversion**: a layer that splits by device keeps a device in one variant
+  whoever signs in on it; splitting by user keeps a person consistent across
+  devices. Requests carry `user_id` and/or `device_id`; an experiment whose id
+  is missing is skipped. Measures are computed per user and per device, so
+  either kind of experiment gets metrics (send both ids on events when known).
 - **Test users** (whitelist) get a fixed variant even before start, and are
-  never counted in reports.
+  never counted in reports. They're user or device ids per the layer.
+- **Parameter conflicts.** On an experiment's page, click any field of a
+  variant's parameters to see every other experiment that sets the same field,
+  a field inside it, or a whole value above it, and who wins. Sharing only a
+  parent object (`search.ranking.formula` vs `search.ads.slot`) is never a
+  conflict, and neither is anything in the same layer. Otherwise: a running
+  experiment (or test-user assignment) beats a launched default; between
+  experiments, **the one that started first wins** (never-started ones come
+  last; same second → smaller id); between launched defaults, the most recent
+  launch wins.
 - Every change is in the experiment's history (audit log).
 
 ## Integrating a service
@@ -135,18 +159,21 @@ Create an API key in **Settings**, or with `libra api-key <name> runtime,ingest`
 
 ```bash
 # What does this user get? (logs exposures)
+# LIBRA=http://localhost:8080/libra
 curl -X POST $LIBRA/api/v1/resolve -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"unit_id":"user-42","business":"search","attrs":{"region":"ID","os":"android"}}'
+  -d '{"user_id":"user-42","device_id":"dev-9f3a","business":"search","attrs":{"region":"ID","device":"android","app_version":"3.500"}}'
 
 # Business events (batches up to 5,000; ts may be up to 30 days old)
 curl -X POST $LIBRA/api/v1/events -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"events":[{"business":"search","event":"order","unit_id":"user-42","value":35.9,"props":{"source":"search","is_ads":true}}]}'
+  -d '{"events":[{"business":"search","event":"order","user_id":"user-42","device_id":"dev-9f3a","value":35.9,"props":{"source":"search","is_ads":true}}]}'
 ```
 
 Go client: `github.com/reynerpantou/libra/pkg/client` (`Resolve`, `Track` with
 background batching, `LogExposures`). Services that assign units locally must
 use the same hash: the first 8 bytes of SHA-256, big-endian, mod 1000, over
-`layer:<layer salt>:<unit>` and `exp:<experiment salt>:<unit>`.
+`layer:<layer salt>:<unit>` and `exp:<experiment salt>:<unit>`, where the
+unit is the user or device id per the layer's diversion. (`unit_id` is still
+accepted as an alias for `user_id`.)
 
 ## Configuration
 

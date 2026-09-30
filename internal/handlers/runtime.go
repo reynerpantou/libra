@@ -17,7 +17,9 @@ import (
 const MaxBatch = 5000
 
 type resolveRequest struct {
-	UnitID   string         `json:"unit_id"`
+	UserID   string         `json:"user_id,omitempty"`
+	DeviceID string         `json:"device_id,omitempty"`
+	UnitID   string         `json:"unit_id,omitempty"` // older name for user_id
 	Business string         `json:"business,omitempty"`
 	Attrs    map[string]any `json:"attrs,omitempty"`
 	// LogExposure records exposures (default true). Set false when the
@@ -27,7 +29,8 @@ type resolveRequest struct {
 }
 
 type resolveResponse struct {
-	UnitID          string            `json:"unit_id"`
+	UserID          string            `json:"user_id,omitempty"`
+	DeviceID        string            `json:"device_id,omitempty"`
 	SnapshotVersion int64             `json:"snapshot_version"`
 	Params          map[string]any    `json:"params"`
 	Hits            []assign.Hit      `json:"hits"`
@@ -43,24 +46,27 @@ func (s *Server) Resolve(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "could not read the request: "+err.Error())
 		return
 	}
-	req.UnitID = strings.TrimSpace(req.UnitID)
-	if req.UnitID == "" || len(req.UnitID) > 200 {
-		badRequest(w, "unit_id is required (up to 200 characters)")
+	req.UserID, req.DeviceID = strings.TrimSpace(req.UserID), strings.TrimSpace(req.DeviceID)
+	if req.UserID == "" {
+		req.UserID = strings.TrimSpace(req.UnitID)
+	}
+	if (req.UserID == "" && req.DeviceID == "") || len(req.UserID) > 200 || len(req.DeviceID) > 200 {
+		badRequest(w, "send user_id, device_id, or both (up to 200 characters each)")
 		return
 	}
 	snap := s.Store.Snapshot()
-	res := snap.Resolve(assign.Request{UnitID: req.UnitID, Business: req.Business, Attrs: req.Attrs}, req.Debug)
+	res := snap.Resolve(assign.Request{UserID: req.UserID, DeviceID: req.DeviceID, Business: req.Business, Attrs: req.Attrs}, req.Debug)
 	if req.LogExposure == nil || *req.LogExposure {
 		now := time.Now().UTC()
 		attrs := serving.DimensionAttrs(req.Attrs)
 		for _, h := range res.Hits {
 			if h.Source == assign.SourceTraffic {
-				s.Exposures.Log(serving.Exposure{ExperimentID: h.ExperimentID, VariantID: h.VariantID, UnitID: req.UnitID, TS: now, Attrs: attrs})
+				s.Exposures.Log(serving.Exposure{ExperimentID: h.ExperimentID, VariantID: h.VariantID, UnitID: h.UnitID, UnitType: h.UnitType, TS: now, Attrs: attrs})
 			}
 		}
 	}
 	writeJSON(w, http.StatusOK, resolveResponse{
-		UnitID: req.UnitID, SnapshotVersion: snap.Version, Params: res.Params, Hits: res.Hits,
+		UserID: req.UserID, DeviceID: req.DeviceID, SnapshotVersion: snap.Version, Params: res.Params, Hits: res.Hits,
 		Conflicts: res.Conflicts, Trace: res.Trace,
 	})
 }
@@ -68,7 +74,9 @@ func (s *Server) Resolve(w http.ResponseWriter, r *http.Request) {
 type exposureIn struct {
 	ExperimentID int64          `json:"experiment_id"`
 	VariantID    int64          `json:"variant_id"`
-	UnitID       string         `json:"unit_id"`
+	UserID       string         `json:"user_id,omitempty"`
+	DeviceID     string         `json:"device_id,omitempty"`
+	UnitID       string         `json:"unit_id,omitempty"` // older name for user_id
 	TS           *time.Time     `json:"ts,omitempty"`
 	Attrs        map[string]any `json:"attrs,omitempty"`
 }
@@ -88,11 +96,17 @@ func (s *Server) IngestExposures(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, fmt.Sprintf("send 1 to %d exposures", MaxBatch))
 		return
 	}
-	valid := map[[2]int64]bool{}
-	for _, e := range s.Store.Snapshot().Experiments {
+	// Running variants, and which id each experiment's layer splits on.
+	snap := s.Store.Snapshot()
+	valid := map[[2]int64]string{}
+	for _, e := range snap.Experiments {
 		if e.Status == assign.StatusActive || e.Status == assign.StatusPaused {
+			diversion := assign.DiversionUser
+			if l := snap.Layers[e.LayerID]; l != nil && l.Diversion != "" {
+				diversion = l.Diversion
+			}
 			for _, v := range e.Variants {
-				valid[[2]int64{e.ID, v.ID}] = true
+				valid[[2]int64{e.ID, v.ID}] = diversion
 			}
 		}
 	}
@@ -100,18 +114,19 @@ func (s *Server) IngestExposures(w http.ResponseWriter, r *http.Request) {
 	var batch []serving.Exposure
 	var rejected []map[string]any
 	for i, x := range req.Exposures {
-		unit := strings.TrimSpace(x.UnitID)
+		diversion, ok := valid[[2]int64{x.ExperimentID, x.VariantID}]
+		unit := strings.TrimSpace(assign.Request{UserID: x.UserID, DeviceID: x.DeviceID, UnitID: x.UnitID}.ID(diversion))
 		switch {
-		case unit == "" || len(unit) > 200:
-			rejected = append(rejected, map[string]any{"index": i, "error": "unit_id is required"})
-		case !valid[[2]int64{x.ExperimentID, x.VariantID}]:
+		case !ok:
 			rejected = append(rejected, map[string]any{"index": i, "error": "not a variant of a running experiment"})
+		case unit == "" || len(unit) > 200:
+			rejected = append(rejected, map[string]any{"index": i, "error": "this experiment splits by " + diversion + "; send it"})
 		default:
 			ts := now
 			if x.TS != nil && x.TS.Before(now.Add(time.Minute)) && x.TS.After(now.AddDate(0, 0, -7)) {
 				ts = x.TS.UTC()
 			}
-			batch = append(batch, serving.Exposure{ExperimentID: x.ExperimentID, VariantID: x.VariantID, UnitID: unit, TS: ts, Attrs: serving.DimensionAttrs(x.Attrs)})
+			batch = append(batch, serving.Exposure{ExperimentID: x.ExperimentID, VariantID: x.VariantID, UnitID: unit, UnitType: diversion, TS: ts, Attrs: serving.DimensionAttrs(x.Attrs)})
 		}
 	}
 	if err := serving.WriteExposures(r.Context(), s.DB, batch); err != nil {
@@ -124,7 +139,9 @@ func (s *Server) IngestExposures(w http.ResponseWriter, r *http.Request) {
 type eventIn struct {
 	Business string          `json:"business"`
 	Event    string          `json:"event"`
-	UnitID   string          `json:"unit_id"`
+	UserID   string          `json:"user_id,omitempty"`
+	DeviceID string          `json:"device_id,omitempty"`
+	UnitID   string          `json:"unit_id,omitempty"` // older name for user_id
 	TS       *time.Time      `json:"ts,omitempty"`
 	Value    *float64        `json:"value,omitempty"`
 	Props    json.RawMessage `json:"props,omitempty"`
@@ -154,7 +171,11 @@ func (s *Server) IngestEvents(w http.ResponseWriter, r *http.Request) {
 			serverError(w, r, err)
 			return
 		}
-		unit := strings.TrimSpace(x.UnitID)
+		unit := strings.TrimSpace(x.UserID)
+		if unit == "" {
+			unit = strings.TrimSpace(x.UnitID)
+		}
+		device := strings.TrimSpace(x.DeviceID)
 		name := strings.TrimSpace(x.Event)
 		props := []byte(x.Props)
 		var obj map[string]any
@@ -165,8 +186,8 @@ func (s *Server) IngestEvents(w http.ResponseWriter, r *http.Request) {
 		case name == "" || len(name) > 120:
 			rejected = append(rejected, map[string]any{"index": i, "error": "event is required"})
 			continue
-		case unit == "" || len(unit) > 200:
-			rejected = append(rejected, map[string]any{"index": i, "error": "unit_id is required"})
+		case (unit == "" && device == "") || len(unit) > 200 || len(device) > 200:
+			rejected = append(rejected, map[string]any{"index": i, "error": "send user_id, device_id, or both"})
 			continue
 		case len(props) > 0 && (json.Unmarshal(props, &obj) != nil || obj == nil):
 			rejected = append(rejected, map[string]any{"index": i, "error": "props must be a JSON object"})
@@ -187,7 +208,7 @@ func (s *Server) IngestEvents(w http.ResponseWriter, r *http.Request) {
 		if x.Value != nil {
 			val = *x.Value
 		}
-		batch = append(batch, serving.Event{BusinessID: bid, Name: name, UnitID: unit, TS: ts, Value: val, Props: props})
+		batch = append(batch, serving.Event{BusinessID: bid, Name: name, UnitID: unit, DeviceID: device, TS: ts, Value: val, Props: props})
 	}
 	if err := serving.WriteEvents(r.Context(), s.DB, batch); err != nil {
 		serverError(w, r, err)

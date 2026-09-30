@@ -2,11 +2,11 @@
 // unit's experiments and parameters, report exposures, and send business
 // events (batched in the background).
 //
-//	c := client.New("https://libra.example.com", os.Getenv("LIBRA_KEY"))
+//	c := client.New("https://example.com/libra", os.Getenv("LIBRA_KEY"))
 //	defer c.Close()
-//	res, err := c.Resolve(ctx, client.ResolveRequest{UnitID: "user-42", Business: "search"})
+//	res, err := c.Resolve(ctx, client.ResolveRequest{UserID: "user-42", DeviceID: "dev-9f3a", Business: "search"})
 //	formula := res.String("search.ranking.formula", "ctr * cvr")
-//	c.Track(client.Event{Business: "search", Event: "order", UnitID: "user-42", Value: 35.9})
+//	c.Track(client.Event{Business: "search", Event: "order", UserID: "user-42", Value: 35.9})
 package client
 
 import (
@@ -40,7 +40,8 @@ type Client struct {
 	OnError func(error)
 }
 
-// New returns a client. Call Close to flush pending events.
+// New returns a client for the Libra at baseURL, e.g.
+// "https://example.com/libra". Call Close to flush pending events.
 func New(baseURL, apiKey string) *Client {
 	c := &Client{
 		base: strings.TrimRight(baseURL, "/"), key: apiKey,
@@ -56,7 +57,8 @@ func New(baseURL, apiKey string) *Client {
 }
 
 type ResolveRequest struct {
-	UnitID      string         `json:"unit_id"`
+	UserID      string         `json:"user_id,omitempty"`
+	DeviceID    string         `json:"device_id,omitempty"`
 	Business    string         `json:"business,omitempty"`
 	Attrs       map[string]any `json:"attrs,omitempty"`
 	LogExposure *bool          `json:"log_exposure,omitempty"`
@@ -68,10 +70,13 @@ type Hit struct {
 	VariantID    int64  `json:"variant_id"`
 	Variant      string `json:"variant"`
 	Source       string `json:"source"`
+	UnitType     string `json:"unit_type"` // user_id | device_id: which id the assignment used
+	UnitID       string `json:"unit_id"`
 }
 
 type ResolveResponse struct {
-	UnitID          string         `json:"unit_id"`
+	UserID          string         `json:"user_id"`
+	DeviceID        string         `json:"device_id"`
 	SnapshotVersion int64          `json:"snapshot_version"`
 	Params          map[string]any `json:"params"`
 	Hits            []Hit          `json:"hits"`
@@ -145,7 +150,8 @@ func (c *Client) Resolve(ctx context.Context, req ResolveRequest) (*ResolveRespo
 type Exposure struct {
 	ExperimentID int64          `json:"experiment_id"`
 	VariantID    int64          `json:"variant_id"`
-	UnitID       string         `json:"unit_id"`
+	UserID       string         `json:"user_id,omitempty"`
+	DeviceID     string         `json:"device_id,omitempty"`
 	TS           *time.Time     `json:"ts,omitempty"`
 	Attrs        map[string]any `json:"attrs,omitempty"`
 }
@@ -158,7 +164,8 @@ func (c *Client) LogExposures(ctx context.Context, xs []Exposure) error {
 type Event struct {
 	Business string         `json:"business"`
 	Event    string         `json:"event"`
-	UnitID   string         `json:"unit_id"`
+	UserID   string         `json:"user_id,omitempty"`
+	DeviceID string         `json:"device_id,omitempty"`
 	TS       *time.Time     `json:"ts,omitempty"`
 	Value    float64        `json:"value,omitempty"`
 	Props    map[string]any `json:"props,omitempty"`

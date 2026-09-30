@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/reynerpantou/libra/internal/auth"
+	"github.com/reynerpantou/libra/internal/config"
 )
 
 // Claiming the owner account. A new install has no accounts at all; the
@@ -66,7 +67,7 @@ func NewSetupLink(ctx context.Context, db *sql.DB, publicURL string) (string, er
 	); err != nil {
 		return "", err
 	}
-	return publicURL + "/setup#" + token, nil
+	return publicURL + config.BasePath + "/setup#" + token, nil
 }
 
 // SetupStart checks the setup token and begins a Google/Apple sign-in that

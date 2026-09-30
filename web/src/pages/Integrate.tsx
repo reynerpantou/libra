@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
+import { BASE } from "../lib/api";
 
-const origin = typeof window !== "undefined" ? window.location.origin : "https://libra.example.com";
+const origin = (typeof window !== "undefined" ? window.location.origin : "https://libra.example.com") + BASE;
 
 export default function Integrate() {
   return (
@@ -20,35 +21,36 @@ export default function Integrate() {
           </p>
           <pre className="code">{`curl -X POST ${origin}/api/v1/resolve \\
   -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\
-  -d '{"unit_id": "user-42", "business": "search",
+  -d '{"user_id": "user-42", "device_id": "dev-9f3a", "business": "search",
        "attrs": {"region": "ID", "os": "android", "app_version": "10.3.0"}}'
 
 {
   "params": {"search": {"ranking": {"formula": "ctr * cvr * price_score", "price_boost": 0.3}}},
   "hits": [{"experiment_id": 1, "experiment": "Ranking formula v2", "variant_id": 2,
-            "variant": "treatment", "source": "experiment"}],
+            "variant": "treatment", "source": "experiment", "unit_type": "user_id"}],
   "snapshot_version": 12
 }`}</pre>
           <p className="muted small">
-            <code>attrs</code> are matched against targeting rules and kept (up to 10 short values) for report breakdowns. Pass{" "}
+            Send both <code>user_id</code> and <code>device_id</code> when you have them: each layer splits traffic by one of them (its{" "}
+            <i>diversion</i>), and an experiment whose id is missing from the request is skipped. <code>attrs</code> are matched against targeting rules and kept (up to 10 short values) for report breakdowns. Pass{" "}
             <code>"log_exposure": false</code> to prefetch without logging, then report the exposure when the user actually sees the change:
           </p>
           <pre className="code">{`curl -X POST ${origin}/api/v1/exposures -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\
-  -d '{"exposures": [{"experiment_id": 1, "variant_id": 2, "unit_id": "user-42", "attrs": {"region": "ID"}}]}'`}</pre>
+  -d '{"exposures": [{"experiment_id": 1, "variant_id": 2, "user_id": "user-42", "attrs": {"region": "ID"}}]}'`}</pre>
         </section>
 
         <section className="card card-pad stack">
           <h2>2. Send business events</h2>
           <p className="muted">
             Push the raw events your metrics are made of — searches, clicks, orders — in batches of up to 5,000. Each has a business key, an event name,
-            the unit id, an optional numeric <code>value</code> and optional <code>props</code>. Needs the <b>ingest</b> scope. Timestamps up to 30 days
+            the <code>user_id</code> and/or <code>device_id</code>, an optional numeric <code>value</code> and optional <code>props</code>. Needs the <b>ingest</b> scope. Timestamps up to 30 days
             old are accepted for backfills.
           </p>
           <pre className="code">{`curl -X POST ${origin}/api/v1/events -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\
   -d '{"events": [
-    {"business": "search", "event": "search", "unit_id": "user-42", "props": {"impressions": 20}},
-    {"business": "search", "event": "search_click", "unit_id": "user-42"},
-    {"business": "search", "event": "order", "unit_id": "user-42", "value": 35.90,
+    {"business": "search", "event": "search", "user_id": "user-42", "device_id": "dev-9f3a", "props": {"impressions": 20}},
+    {"business": "search", "event": "search_click", "user_id": "user-42", "device_id": "dev-9f3a"},
+    {"business": "search", "event": "order", "user_id": "user-42", "device_id": "dev-9f3a", "value": 35.90,
      "ts": "2026-09-30T08:15:00Z", "props": {"source": "search", "is_ads": true}}
   ]}'`}</pre>
         </section>
@@ -93,11 +95,11 @@ export default function Integrate() {
           <pre className="code">{`import "github.com/reynerpantou/libra/pkg/client"
 
 c := client.New("${origin}", os.Getenv("LIBRA_KEY"))
-res, err := c.Resolve(ctx, client.ResolveRequest{UnitID: "user-42", Business: "search",
+res, err := c.Resolve(ctx, client.ResolveRequest{UserID: "user-42", DeviceID: "dev-9f3a", Business: "search",
     Attrs: map[string]any{"region": "ID"}})
 formula := res.String("search.ranking.formula", "ctr * cvr")
 
-c.Track(client.Event{Business: "search", Event: "order", UnitID: "user-42", Value: 35.9,
+c.Track(client.Event{Business: "search", Event: "order", UserID: "user-42", DeviceID: "dev-9f3a", Value: 35.9,
     Props: map[string]any{"source": "search"}})   // batched in the background
 defer c.Close()                                     // flushes pending events`}</pre>
         </section>

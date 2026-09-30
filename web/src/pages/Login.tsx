@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, asset, BASE } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import ProviderIcon from "../components/ProviderIcon";
 
@@ -17,7 +17,7 @@ const ERRORS: Record<string, string> = {
 export function Brand() {
   return (
     <div className="brand" style={{ padding: 0, fontSize: 20 }}>
-      <img src="/icon.svg" alt="" style={{ width: 32, height: 32 }} />
+      <img src={asset("icon.svg")} alt="" style={{ width: 32, height: 32 }} />
       Libra
     </div>
   );
@@ -67,7 +67,7 @@ export default function Login() {
           <div className="stack-sm">
             {providers.map((p) => (
               // A real navigation, not fetch: the browser has to visit the provider's page.
-              <a key={p} className={`btn provider-btn provider-${p}`} href={`/api/auth/${p}/start`}>
+              <a key={p} className={`btn provider-btn provider-${p}`} href={`${BASE}/api/auth/${p}/start`}>
                 <ProviderIcon provider={p} />
                 Continue with {p === "google" ? "Google" : "Apple"}
               </a>

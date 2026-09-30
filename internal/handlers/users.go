@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/reynerpantou/libra/internal/auth"
+	"github.com/reynerpantou/libra/internal/config"
 	"github.com/reynerpantou/libra/internal/middleware"
 )
 
@@ -39,7 +40,7 @@ func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
 		_ = auth.DeleteSession(s.DB, c.Value)
 	}
 	for _, name := range []string{middleware.SessionCookie, middleware.CSRFCookie} {
-		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1, HttpOnly: name == middleware.SessionCookie, Secure: s.Cfg.CookieSecure, SameSite: http.SameSiteLaxMode})
+		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: config.BasePath + "/", MaxAge: -1, HttpOnly: name == middleware.SessionCookie, Secure: s.Cfg.CookieSecure, SameSite: http.SameSiteLaxMode})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -80,13 +80,13 @@ func (s *Store) Watch(ctx context.Context, every time.Duration) {
 // Load reads every experiment that can affect serving into a snapshot.
 func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, error) {
 	var layers []*assign.Layer
-	rows, err := db.QueryContext(ctx, `SELECT id, name, salt FROM layers`)
+	rows, err := db.QueryContext(ctx, `SELECT id, name, salt, diversion FROM layers`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		l := &assign.Layer{}
-		if err := rows.Scan(&l.ID, &l.Name, &l.Salt); err != nil {
+		if err := rows.Scan(&l.ID, &l.Name, &l.Salt, &l.Diversion); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -98,7 +98,8 @@ func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, err
 	var list []*assign.Experiment
 	rows, err = db.QueryContext(ctx, `
 		SELECT e.id, b.key, e.layer_id, e.name, e.status, e.salt, array_to_string(e.buckets, ','), e.targeting,
-		       COALESCE(e.launched_variant_id, 0), COALESCE(extract(epoch FROM e.launched_at)::bigint, 0)
+		       COALESCE(e.launched_variant_id, 0), COALESCE(extract(epoch FROM e.launched_at)::bigint, 0),
+		       COALESCE(extract(epoch FROM e.started_at)::bigint, 0)
 		FROM experiments e JOIN businesses b ON b.id = e.business_id
 		WHERE e.status IN ('draft', 'in_review', 'approved', 'rejected', 'active', 'paused', 'launched')`)
 	if err != nil {
@@ -108,7 +109,7 @@ func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, err
 		e := &assign.Experiment{Whitelist: map[string]int64{}}
 		var buckets string
 		var targeting []byte
-		if err := rows.Scan(&e.ID, &e.BusinessKey, &e.LayerID, &e.Name, &e.Status, &e.Salt, &buckets, &targeting, &e.LaunchedVar, &e.LaunchOrder); err != nil {
+		if err := rows.Scan(&e.ID, &e.BusinessKey, &e.LayerID, &e.Name, &e.Status, &e.Salt, &buckets, &targeting, &e.LaunchedVar, &e.LaunchOrder, &e.StartOrder); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -185,6 +186,7 @@ type Exposure struct {
 	ExperimentID int64
 	VariantID    int64
 	UnitID       string
+	UnitType     string // user_id | device_id
 	TS           time.Time
 	Attrs        []byte // JSON object
 }
@@ -217,7 +219,7 @@ func NewLogger(db *sql.DB) *Logger {
 
 // Log queues an exposure unless the same one was logged recently.
 func (l *Logger) Log(e Exposure) {
-	key := fmt.Sprintf("%d:%d:%s", e.ExperimentID, e.VariantID, e.UnitID)
+	key := fmt.Sprintf("%d:%d:%s:%s", e.ExperimentID, e.VariantID, e.UnitType, e.UnitID)
 	l.mu.Lock()
 	if t, ok := l.recent[key]; ok && e.TS.Sub(t) < dedupeFor {
 		l.mu.Unlock()
@@ -290,25 +292,32 @@ func WriteExposures(ctx context.Context, db *sql.DB, xs []Exposure) error {
 	units := make([]string, len(xs))
 	ts := make([]time.Time, len(xs))
 	attrs := make([]string, len(xs))
+	types := make([]string, len(xs))
 	for i, x := range xs {
 		exp[i], vars[i], units[i], ts[i] = x.ExperimentID, x.VariantID, x.UnitID, x.TS
+		types[i] = x.UnitType
+		if types[i] == "" {
+			types[i] = "user_id"
+		}
 		attrs[i] = "{}"
 		if len(x.Attrs) > 0 {
 			attrs[i] = string(x.Attrs)
 		}
 	}
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO exposures (experiment_id, variant_id, unit_id, ts, attrs)
-		SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::timestamptz[], $5::jsonb[])`,
-		exp, vars, units, ts, attrs)
+		INSERT INTO exposures (experiment_id, variant_id, unit_id, ts, attrs, unit_type)
+		SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::timestamptz[], $5::jsonb[], $6::text[])`,
+		exp, vars, units, ts, attrs, types)
 	return err
 }
 
-// Event is one business event (an impression, a click, an order...).
+// Event is one business event (an impression, a click, an order...). It
+// names the user (UnitID), the device, or both.
 type Event struct {
 	BusinessID int64
 	Name       string
-	UnitID     string
+	UnitID     string // user id; may be empty when DeviceID is set
+	DeviceID   string
 	TS         time.Time
 	Value      float64
 	Props      []byte // JSON object
@@ -325,7 +334,12 @@ func WriteEvents(ctx context.Context, db *sql.DB, xs []Event) error {
 	ts := make([]time.Time, len(xs))
 	vals := make([]float64, len(xs))
 	props := make([]string, len(xs))
+	devices := make([]*string, len(xs))
 	for i, x := range xs {
+		if x.DeviceID != "" {
+			d := x.DeviceID
+			devices[i] = &d
+		}
 		biz[i], names[i], units[i], ts[i], vals[i] = x.BusinessID, x.Name, x.UnitID, x.TS, x.Value
 		props[i] = "{}"
 		if len(x.Props) > 0 {
@@ -333,9 +347,9 @@ func WriteEvents(ctx context.Context, db *sql.DB, xs []Event) error {
 		}
 	}
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO events (business_id, event_name, unit_id, ts, value, props)
-		SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::timestamptz[], $5::float8[], $6::jsonb[])`,
-		biz, names, units, ts, vals, props)
+		INSERT INTO events (business_id, event_name, unit_id, ts, value, props, device_id)
+		SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::timestamptz[], $5::float8[], $6::jsonb[], $7::text[])`,
+		biz, names, units, ts, vals, props, devices)
 	return err
 }
 

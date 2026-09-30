@@ -78,6 +78,39 @@ export interface Rule {
   values: string[];
 }
 
+// OR of AND-groups: a unit matches when every rule of some group passes.
+export interface Targeting {
+  groups: Rule[][];
+}
+
+export type Diversion = "user_id" | "device_id";
+
+export type AttrType = "string" | "number" | "version" | "boolean";
+
+export interface Attribute {
+  id: number;
+  key: string;
+  name: string;
+  description: string;
+  type: AttrType;
+  options: string[];
+  used_by: number;
+}
+
+export interface ParamUse {
+  experiment_id: number;
+  experiment: string;
+  status: Status;
+  layer: string;
+  same_layer: boolean;
+  relation: "same" | "inside" | "covers" | "shares_parent";
+  their_paths: string[];
+  variants: string[];
+  conflict: boolean;
+  winner: "this" | "other" | "none";
+  reason: string;
+}
+
 export interface Variant {
   id?: number;
   key: string;
@@ -120,7 +153,8 @@ export interface Experiment {
   status: Status;
   traffic_target: number;
   traffic_held: number;
-  targeting: Rule[];
+  targeting: Targeting;
+  layer_diversion: Diversion;
   metric_group_id: number | null;
   review_note: string;
   reviewer_name: string;
@@ -140,6 +174,7 @@ export interface Layer {
   id: number;
   name: string;
   description: string;
+  diversion: Diversion;
   used_buckets: number;
   holders: { experiment_id: number; name: string; status: Status; buckets: number }[];
 }
@@ -230,6 +265,8 @@ export interface Hit {
   variant_id: number;
   variant: string;
   source: "experiment" | "whitelist" | "launch";
+  unit_type: Diversion;
+  unit_id?: string;
 }
 
 export interface Step {

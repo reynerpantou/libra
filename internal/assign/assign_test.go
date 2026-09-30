@@ -1,6 +1,7 @@
 package assign
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"testing"
@@ -116,19 +117,20 @@ func TestTargeting(t *testing.T) {
 		{Attr: "app_version", Op: "version_gte", Values: []string{"10.2"}},
 		{Attr: "age", Op: "gte", Values: []string{"18"}},
 	}
-	ok, _ := Match(rules, map[string]any{"region": "id", "app_version": "10.10.1", "age": 20.0})
+	all := Targeting{Groups: [][]Rule{rules}}
+	ok, _ := Match(all, map[string]any{"region": "id", "app_version": "10.10.1", "age": 20.0})
 	if !ok {
 		t.Error("expected match")
 	}
-	ok, why := Match(rules, map[string]any{"region": "US", "app_version": "10.10.1", "age": 20.0})
+	ok, why := Match(all, map[string]any{"region": "US", "app_version": "10.10.1", "age": 20.0})
 	if ok || why == "" {
 		t.Error("region should fail")
 	}
-	ok, _ = Match(rules, map[string]any{"region": "SG", "app_version": "9.9", "age": 20.0})
+	ok, _ = Match(all, map[string]any{"region": "SG", "app_version": "9.9", "age": 20.0})
 	if ok {
 		t.Error("version should fail")
 	}
-	ok, _ = Match([]Rule{{Attr: "os", Op: "neq", Values: []string{"ios"}}}, nil)
+	ok, _ = Match(Targeting{Groups: [][]Rule{{{Attr: "os", Op: "neq", Values: []string{"ios"}}}}}, nil)
 	if !ok {
 		t.Error("missing attribute satisfies neq")
 	}
@@ -136,7 +138,7 @@ func TestTargeting(t *testing.T) {
 
 func TestWhitelistLaunchAndMerge(t *testing.T) {
 	launched := &Experiment{ID: 1, LayerID: 1, Name: "old", Status: StatusLaunched, LaunchedVar: 2, Variants: twoVariants()}
-	running := &Experiment{ID: 2, LayerID: 2, Name: "new", Status: StatusActive, Salt: "r", Buckets: buckets(1000), Variants: []Variant{
+	running := &Experiment{ID: 2, LayerID: 2, Name: "new", Status: StatusActive, Salt: "r", StartOrder: 1000, Buckets: buckets(1000), Variants: []Variant{
 		{ID: 3, Key: "control", IsControl: true, Weight: 500, Params: map[string]any{"rank": map[string]any{"boost": 1.0}}},
 		{ID: 4, Key: "treatment", Weight: 500, Params: map[string]any{"rank": map[string]any{"formula": "exp", "boost": 1.5}}},
 	}}
@@ -187,5 +189,84 @@ func TestMergerConflicts(t *testing.T) {
 func TestCompareVersions(t *testing.T) {
 	if CompareVersions("10.2", "9.9") != 1 || CompareVersions("1.0", "1") != 0 || CompareVersions("1.2.3", "1.10") != -1 {
 		t.Error("version compare")
+	}
+}
+
+func TestTargetingOrGroups(t *testing.T) {
+	// (device = android AND app_version >= 3.400) OR (device = ios AND app_version >= 2.300) OR device in (desktop, mobile)
+	tg := Targeting{Groups: [][]Rule{
+		{{Attr: "device", Op: "eq", Values: []string{"android"}}, {Attr: "app_version", Op: "version_gte", Values: []string{"3.400"}}},
+		{{Attr: "device", Op: "eq", Values: []string{"ios"}}, {Attr: "app_version", Op: "version_gte", Values: []string{"2.300"}}},
+		{{Attr: "device", Op: "in", Values: []string{"desktop", "mobile"}}},
+	}}
+	cases := []struct {
+		attrs map[string]any
+		want  bool
+	}{
+		{map[string]any{"device": "android", "app_version": "3.500"}, true},
+		{map[string]any{"device": "android", "app_version": "2.500"}, false},
+		{map[string]any{"device": "ios", "app_version": "2.300"}, true},
+		{map[string]any{"device": "desktop"}, true},
+		{map[string]any{"device": "tv"}, false},
+		{map[string]any{}, false},
+	}
+	for _, c := range cases {
+		if got, why := Match(tg, c.attrs); got != c.want {
+			t.Errorf("%v: got %v (%s)", c.attrs, got, why)
+		}
+	}
+	if ok, _ := Match(Targeting{}, nil); !ok {
+		t.Error("empty targeting matches everyone")
+	}
+}
+
+func TestTargetingJSON(t *testing.T) {
+	var legacy Targeting
+	if err := json.Unmarshal([]byte(`[{"attr":"region","op":"eq","values":["ID"]}]`), &legacy); err != nil || len(legacy.Groups) != 1 {
+		t.Fatalf("legacy: %+v %v", legacy, err)
+	}
+	var empty Targeting
+	_ = json.Unmarshal([]byte(`[]`), &empty)
+	b, _ := json.Marshal(empty)
+	if string(b) != `{"groups":[]}` {
+		t.Errorf("empty marshals to %s", b)
+	}
+	if err := ValidateTargeting(Targeting{Groups: [][]Rule{{}}}, nil); err == nil {
+		t.Error("empty group should be invalid")
+	}
+	if err := ValidateTargeting(legacy, map[string]bool{"os": true}); err == nil {
+		t.Error("unregistered attribute should be invalid")
+	}
+}
+
+func TestDeviceDiversion(t *testing.T) {
+	e := &Experiment{ID: 1, LayerID: 1, Name: "d", Status: StatusActive, Salt: "s", Buckets: buckets(1000), Variants: twoVariants(),
+		Whitelist: map[string]int64{"dev-qa": 2}}
+	s := NewSnapshot(1, []*Layer{{ID: 1, Salt: "L", Diversion: DiversionDevice}}, []*Experiment{e})
+	r := s.Resolve(Request{UserID: "u1"}, true)
+	if len(r.Hits) != 0 || r.Trace[0].Outcome != "missing_id" {
+		t.Fatalf("no device id: %+v", r)
+	}
+	a := s.Resolve(Request{UserID: "u1", DeviceID: "dev-7"}, false)
+	b := s.Resolve(Request{UserID: "u2", DeviceID: "dev-7"}, false)
+	if len(a.Hits) != 1 || a.Hits[0].UnitType != DiversionDevice || a.Hits[0].UnitID != "dev-7" || a.Hits[0].Variant != b.Hits[0].Variant {
+		t.Errorf("device assignment should follow the device: %+v %+v", a.Hits, b.Hits)
+	}
+	if w := s.Resolve(Request{DeviceID: "dev-qa"}, false); w.Hits[0].Source != SourceWhitelist {
+		t.Errorf("device whitelist: %+v", w.Hits)
+	}
+}
+
+func TestPriorityByStartTime(t *testing.T) {
+	param := func(v string) []Variant {
+		return []Variant{{ID: 1, Key: "only", IsControl: true, Weight: 1000, Params: map[string]any{"x": v}}}
+	}
+	// The higher id started first, so it wins despite the larger id.
+	older := &Experiment{ID: 900, LayerID: 1, Name: "older", Status: StatusActive, Salt: "a", Buckets: buckets(1000), Variants: param("older"), StartOrder: 100}
+	newer := &Experiment{ID: 100, LayerID: 2, Name: "newer", Status: StatusActive, Salt: "b", Buckets: buckets(1000), Variants: param("newer"), StartOrder: 200}
+	s := NewSnapshot(1, []*Layer{{ID: 1, Salt: "1"}, {ID: 2, Salt: "2"}}, []*Experiment{older, newer})
+	r := s.Resolve(Request{UserID: "u"}, false)
+	if r.Params["x"] != "older" || len(r.Conflicts) != 1 || r.Conflicts[0].Winner != 900 {
+		t.Errorf("params %v conflicts %+v", r.Params, r.Conflicts)
 	}
 }

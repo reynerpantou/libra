@@ -1,26 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ErrorBox, Field, Icon, Loading } from "../components/ui";
+import { ErrorBox, Field, Icon, Loading, TrafficBar } from "../components/ui";
 import { api, type ExperimentInput } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { trafficPct } from "../lib/format";
 import { useAsync } from "../lib/hooks";
-import type { Rule, Variant } from "../lib/types";
+import type { Targeting, Variant } from "../lib/types";
+import { TargetingEditor } from "../components/Targeting";
 
-const OPS: [string, string][] = [
-  ["eq", "equals"],
-  ["neq", "does not equal"],
-  ["in", "is one of"],
-  ["not_in", "is not one of"],
-  ["gt", ">"],
-  ["gte", "≥"],
-  ["lt", "<"],
-  ["lte", "≤"],
-  ["version_gte", "version ≥"],
-  ["version_lt", "version <"],
-  ["exists", "is set"],
-  ["not_exists", "is not set"],
-];
 
 interface VariantDraft extends Omit<Variant, "params"> {
   paramsText: string;
@@ -37,8 +24,8 @@ export default function ExperimentForm() {
   const nav = useNavigate();
   const { user } = useAuth();
   const refs = useAsync(async () => {
-    const [businesses, layers, users] = await Promise.all([api.businesses(), api.layers(), api.users()]);
-    return { businesses, layers, users };
+    const [businesses, layers, users, attributes] = await Promise.all([api.businesses(), api.layers(), api.users(), api.attributes()]);
+    return { businesses, layers, users, attributes };
   }, []);
   const existing = useAsync(async () => (editing ? api.experiment(Number(id)) : null), [id]);
 
@@ -49,7 +36,7 @@ export default function ExperimentForm() {
   const [description, setDescription] = useState("");
   const [ownerId, setOwnerId] = useState<number | null>(null);
   const [traffic, setTraffic] = useState(100);
-  const [rules, setRules] = useState<Rule[]>([]);
+  const [targeting, setTargeting] = useState<Targeting>({ groups: [] });
   const [groupId, setGroupId] = useState<number | null>(null);
   const [variants, setVariants] = useState<VariantDraft[]>(blankVariants());
   const [error, setError] = useState("");
@@ -66,7 +53,7 @@ export default function ExperimentForm() {
     setDescription(e.description);
     setOwnerId(e.owner_id);
     setTraffic(e.traffic_target);
-    setRules(e.targeting);
+    setTargeting(e.targeting);
     setGroupId(e.metric_group_id);
     setVariants(
       (e.variants ?? []).map((v) => ({ ...v, paramsText: JSON.stringify(v.params ?? {}, null, 2) }))
@@ -84,6 +71,10 @@ export default function ExperimentForm() {
   const total = variants.reduce((s, v) => s + (Number(v.weight) || 0), 0);
   const layer = refs.data?.layers.find((l) => l.id === layerId);
   const layerFree = layer ? 1000 - layer.used_buckets + (existing.data?.layer_id === layerId ? existing.data.traffic_held : 0) : 1000;
+  // Don't let a draft plan more traffic than its layer has free.
+  useEffect(() => {
+    if (!locked && traffic > layerFree) setTraffic(layerFree);
+  }, [layerFree, locked, traffic]);
 
   const paramErrors = useMemo(
     () =>
@@ -118,7 +109,7 @@ export default function ExperimentForm() {
       description,
       owner_id: ownerId,
       traffic_target: traffic,
-      targeting: rules,
+      targeting,
       metric_group_id: groupId,
       variants: variants.map(({ paramsText, ...v }) => ({ ...v, weight: Number(v.weight), params: JSON.parse(paramsText || "{}") })),
     };
@@ -211,64 +202,55 @@ export default function ExperimentForm() {
         <section className="card card-pad stack">
           <h2>Traffic</h2>
           <div className="grid-2">
-            <Field label="Layer" hint="Experiments in the same layer never share users.">
+            <Field
+              label="Layer"
+              hint={
+                layer
+                  ? `Splits traffic by ${layer.diversion === "device_id" ? "device id" : "user id"}. Experiments in the same layer never share a ${layer.diversion === "device_id" ? "device" : "user"}.`
+                  : "Experiments in the same layer never share units."
+              }
+            >
               <select className="input" disabled={locked} value={layerId} onChange={(e) => setLayerId(Number(e.target.value))}>
                 {refs.data?.layers.map((l) => (
                   <option key={l.id} value={l.id}>
-                    {l.name} — {trafficPct(1000 - l.used_buckets)} free
+                    {l.name} ({l.diversion === "device_id" ? "by device" : "by user"}) — {trafficPct(1000 - l.used_buckets)} free
                   </option>
                 ))}
               </select>
             </Field>
             <Field
               label={`Traffic: ${trafficPct(traffic)} of the layer`}
-              hint={locked ? "Change traffic from the experiment page (ramping keeps current users in)." : `${trafficPct(layerFree)} of this layer is free right now.`}
+              hint={
+                locked
+                  ? "Change traffic from the experiment page (ramping keeps current units in)."
+                  : layerFree === 0
+                  ? "This layer is full. Pick another layer, or free traffic by stopping an experiment in it."
+                  : `Up to ${trafficPct(layerFree)} — what this layer has free right now.`
+              }
             >
-              <input type="range" min={0} max={1000} step={5} disabled={locked} value={traffic} onChange={(e) => setTraffic(Number(e.target.value))} />
+              <input
+                type="range"
+                min={0}
+                max={1000}
+                step={5}
+                disabled={locked || layerFree === 0}
+                value={traffic}
+                onChange={(e) => setTraffic(Math.min(Number(e.target.value), layerFree))}
+              />
+              <TrafficBar mine={traffic} free={layerFree} />
             </Field>
           </div>
         </section>
 
         <section className="card card-pad stack">
-          <div className="row-between">
-            <div>
-              <h2>Targeting</h2>
-              <p className="faint small">Only units whose request attributes match every rule enter. Leave empty to include everyone.</p>
-            </div>
-            <button className="btn btn-sm" onClick={() => setRules([...rules, { attr: "region", op: "in", values: [] }])}>
-              <Icon name="plus" /> Add rule
-            </button>
+          <div>
+            <h2>Targeting</h2>
+            <p className="faint small">
+              A unit is eligible when all AND conditions in at least one OR group match its request attributes. Attributes come from{" "}
+              <Link to="/attributes">Targeting attributes</Link>.
+            </p>
           </div>
-          {rules.map((r, i) => (
-            <div key={i} className="row" style={{ alignItems: "flex-end" }}>
-              <Field label="Attribute">
-                <input className="input input-mono" style={{ width: 160 }} value={r.attr} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, attr: e.target.value.trim() } : x)))} />
-              </Field>
-              <Field label="Condition">
-                <select className="input" style={{ width: 150 }} value={r.op} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, op: e.target.value } : x)))}>
-                  {OPS.map(([k, l]) => (
-                    <option key={k} value={k}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              {r.op !== "exists" && r.op !== "not_exists" && (
-                <div style={{ flex: 1, minWidth: 180 }}>
-                  <Field label="Value(s), comma-separated">
-                    <input
-                      className="input"
-                      value={r.values.join(",")}
-                      onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, values: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } : x)))}
-                    />
-                  </Field>
-                </div>
-              )}
-              <button className="icon-btn" aria-label="Remove rule" onClick={() => setRules(rules.filter((_, j) => j !== i))}>
-                <Icon name="trash" size={16} />
-              </button>
-            </div>
-          ))}
+          <TargetingEditor value={targeting} onChange={setTargeting} attributes={refs.data?.attributes ?? []} />
         </section>
 
         <section className="card card-pad stack">

@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { LineChart } from "../components/LineChart";
+import { ParamTree, UsagePanel } from "../components/ParamTree";
 import ReportView from "../components/ReportView";
-import { Empty, ErrorBox, Field, Icon, Loading, Modal, StatusBadge, Tabs } from "../components/ui";
+import { TargetingView } from "../components/Targeting";
+import { Empty, ErrorBox, Field, Icon, Loading, Modal, StatusBadge, Tabs, TrafficBar } from "../components/ui";
 import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { actionLabel, fmtDate, fmtDateTime, fmtInt, statusLabel, trafficPct } from "../lib/format";
@@ -190,6 +192,8 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
   const [busy, setBusy] = useState(false);
   const layers = useAsync(() => api.layers(), [e.updated_at]);
   const exposures = useAsync(() => api.exposures(e.id), [e.id]);
+  const usage = useAsync(() => api.paramUsage(e.id), [e.id, e.updated_at]);
+  const [path, setPath] = useState("");
   useEffect(() => setTraffic(e.traffic_target), [e.traffic_target]);
   const layer = layers.data?.find((l) => l.id === e.layer_id);
   const running = e.status === "active" || e.status === "paused";
@@ -240,18 +244,10 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
             )}
             <dt>Targeting</dt>
             <dd>
-              {e.targeting.length === 0 ? (
-                <span className="faint">Everyone</span>
-              ) : (
-                <div className="pill-row">
-                  {e.targeting.map((r, i) => (
-                    <span key={i} className="chip">
-                      {r.attr} {r.op} {r.values.join(",")}
-                    </span>
-                  ))}
-                </div>
-              )}
+              <TargetingView value={e.targeting} />
             </dd>
+            <dt>Split by</dt>
+            <dd>{e.layer_diversion === "device_id" ? "Device id" : "User id"} (set by the layer)</dd>
             <dt>Units measured</dt>
             <dd>{fmtInt(e.units)}</dd>
           </dl>
@@ -289,11 +285,19 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
           {canEdit && !finished && e.status !== "in_review" && (
             <>
               <Field label={`Target: ${trafficPct(traffic)}`} hint={`Up to ${trafficPct(free)} is available. Ramping up keeps everyone already in; ramping down removes the most recent units first.`}>
-                <input type="range" min={0} max={1000} step={5} value={traffic} onChange={(x) => setTraffic(Number(x.target.value))} />
+                <input
+                  type="range"
+                  min={0}
+                  max={1000}
+                  step={5}
+                  value={traffic}
+                  onChange={(x) => setTraffic(Math.min(Number(x.target.value), free))}
+                />
+                <TrafficBar mine={traffic} free={free} />
               </Field>
               <div className="row">
                 {[10, 50, 100, 200, 500, 1000].map((v) => (
-                  <button key={v} className="btn btn-sm" onClick={() => setTraffic(Math.min(v, free))}>
+                  <button key={v} className="btn btn-sm" disabled={v > free} onClick={() => setTraffic(v)}>
                     {trafficPct(v)}
                   </button>
                 ))}
@@ -311,7 +315,20 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
 
       <section className="card">
         <div className="card-head">
-          <h2>Variants</h2>
+          <div>
+            <h2>Variants</h2>
+            <p>
+              Click any field to see which other experiments use it and who wins a conflict.{" "}
+              <span className="ptree" style={{ padding: "0 4px", display: "inline" }}>
+                <span className="pkey used">underlined</span>
+              </span>{" "}
+              = also used elsewhere,{" "}
+              <span className="ptree" style={{ padding: "0 4px", display: "inline" }}>
+                <span className="pkey conflict">highlighted</span>
+              </span>{" "}
+              = can conflict.
+            </p>
+          </div>
         </div>
         <div className="table-wrap">
           <table className="tbl">
@@ -337,13 +354,18 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
                   </td>
                   <td className="num">{trafficPct(v.weight)}</td>
                   <td>
-                    <pre className="code" style={{ maxHeight: 180 }}>{JSON.stringify(v.params, null, 2)}</pre>
+                    <ParamTree value={v.params} usage={usage.data?.paths ?? null} selected={path} onSelect={(p) => setPath(p === path ? "" : p)} />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        {path && usage.data && (
+          <div className="card-pad" style={{ borderTop: "1px solid var(--border)" }}>
+            <UsagePanel path={path} uses={usage.data.paths[path] ?? []} rules={usage.data.priority_rules} />
+          </div>
+        )}
       </section>
 
       <section className="card card-pad stack">
@@ -393,7 +415,10 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
         <div className="card-head">
           <div>
             <h2>Test users</h2>
-            <p>Whitelisted units always get their variant — even before the experiment starts — and are left out of reports.</p>
+            <p>
+              Whitelisted {e.layer_diversion === "device_id" ? "devices" : "users"} always get their variant — even before the experiment starts — and are
+              left out of reports.
+            </p>
           </div>
         </div>
         {(e.whitelist ?? []).length === 0 ? (
@@ -402,7 +427,7 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
           <table className="tbl tbl-compact">
             <thead>
               <tr>
-                <th>Unit id</th>
+                <th>{e.layer_diversion === "device_id" ? "Device id" : "User id"}</th>
                 <th>Variant</th>
                 <th>Note</th>
                 <th />
@@ -430,7 +455,10 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
       {canEdit && !["stopped", "launched", "archived"].includes(e.status) && (
         <section className="card card-pad stack">
           <h2>Add test users</h2>
-          <Field label="Unit ids" hint="One per line, or separated by commas or spaces.">
+          <Field
+            label={e.layer_diversion === "device_id" ? "Device ids" : "User ids"}
+            hint={`This experiment's layer splits by ${e.layer_diversion === "device_id" ? "device" : "user"}, so enter ${e.layer_diversion === "device_id" ? "device" : "user"} ids — one per line, or separated by commas or spaces.`}
+          >
             <textarea className="input input-mono" rows={4} value={units} onChange={(x) => setUnits(x.target.value)} />
           </Field>
           <Field label="Variant">
