@@ -331,3 +331,38 @@ func (s *Server) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// SearchUsers finds people by name, username or email, for pickers such as
+// inviting reviewers (?reviewers=1 limits to editors and admins, who can
+// review). It returns at most 10 matches, best first. Editors may see
+// emails here: they need them to tell colleagues apart.
+func (s *Server) SearchUsers(w http.ResponseWriter, r *http.Request) {
+	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	roles := []string{"viewer", "editor", "admin"}
+	if r.URL.Query().Get("reviewers") == "1" {
+		roles = []string{"editor", "admin"}
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `
+		SELECT id, username, COALESCE(email, ''), COALESCE(NULLIF(display_name, ''), username), role, is_owner, created_at
+		FROM users
+		WHERE role = ANY($2::text[])
+		  AND ($1 = '' OR lower(display_name) LIKE '%' || $1 || '%' OR lower(username) LIKE '%' || $1 || '%' OR lower(COALESCE(email, '')) LIKE '%' || $1 || '%')
+		ORDER BY (lower(display_name) LIKE $1 || '%' OR lower(username) LIKE $1 || '%' OR lower(COALESCE(email, '')) LIKE $1 || '%') DESC,
+		         lower(COALESCE(NULLIF(display_name, ''), username))
+		LIMIT 10`, q, roles)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	defer rows.Close()
+	out := []User{}
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.Role, &u.IsOwner, &u.CreatedAt); err != nil {
+			serverError(w, r, err)
+			return
+		}
+		out = append(out, u)
+	}
+	writeJSON(w, http.StatusOK, out)
+}

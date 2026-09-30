@@ -128,7 +128,13 @@ export function NamespacedJson({ platformKey, platformName, children }: { platfo
     <div className="json-ns">
       <div className="json-ns-line" title={`Parameters are namespaced by the platform key of ${platformName || "the business's platform"}`}>
         {"{ "}
-        <span className="json-ns-key">"{platformKey || "…"}"</span>: <span className="faint">— {platformName || "platform"}, fixed</span>
+        {platformKey ? (
+          <>
+            <span className="json-ns-key">"{platformKey}"</span>: <span className="faint">— {platformName || "platform"} key, fixed</span>
+          </>
+        ) : (
+          <span className="faint">"…": — choose a platform above; its key wraps these parameters</span>
+        )}
       </div>
       <div className="json-ns-body">{children}</div>
       <div className="json-ns-line">{"}"}</div>

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { LineChart } from "../components/LineChart";
 import { ParamTree, UsagePanel } from "../components/ParamTree";
+import { Pager, usePaged } from "../components/Pager";
 import { ReviewerPicker } from "../components/ReviewerPicker";
 import { RolloutChoice, RolloutStatus, schedule } from "../components/Rollout";
 import ReportView from "../components/ReportView";
@@ -20,6 +21,7 @@ export default function ExperimentDetail() {
   const id = Number(useParams().id);
   const [params, setParams] = useSearchParams();
   const exp = useAsync(() => api.experiment(id), [id]);
+  const diversions = useDiversions();
   const e = exp.data;
   const defaultTab: Tab = e && (e.units > 0 || ["active", "paused", "stopped", "launched"].includes(e.status)) ? "report" : "overview";
   const tab = (params.get("tab") as Tab) || defaultTab;
@@ -38,7 +40,7 @@ export default function ExperimentDetail() {
         tabs={[
           ["report", "Report"],
           ["overview", "Overview & traffic"],
-          ["whitelist", `Test users (${e.whitelist?.length ?? 0})`],
+          ["whitelist", `Test ${unitNoun(e.layer_diversion, diversionName(diversions, e.layer_diversion))} (${e.whitelist?.length ?? 0})`],
           ["history", "History"],
         ]}
         value={tab}
@@ -66,8 +68,6 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
   const needsDialog = ["reject", "approve", "launch", "stop", "archive", "pause", "start", "submit"];
   const [reviewerIds, setReviewerIds] = useState<number[]>([]);
   const [inviting, setInviting] = useState(false);
-  const needReviewers = pending === "submit" || inviting;
-  const people = useAsync(async () => (needReviewers ? api.users() : []), [needReviewers]);
   const biz = useAsync(async () => (pending === "submit" ? api.business(e.business_id) : null), [pending, e.business_id]);
   const reviewSkipped = pending === "submit" && biz.data && !biz.data.require_review;
 
@@ -215,7 +215,7 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
             </>
           }
         >
-          <ReviewerPicker users={people.data ?? []} value={reviewerIds} onChange={setReviewerIds} already={(e.reviewers ?? []).map((r) => r.user_id)} />
+          <ReviewerPicker value={reviewerIds} onChange={setReviewerIds} already={(e.reviewers ?? []).map((r) => ({ user_id: r.user_id, name: r.name }))} />
           <ErrorBox error={error} />
         </Modal>
       )}
@@ -239,9 +239,13 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
             (reviewSkipped ? (
               <p className="muted">{e.business_name} doesn't require review: submitting approves the experiment right away.</p>
             ) : (
-              <Field label="Reviewers" hint="Invite at least one editor or admin — you can invite yourself. Any one of them can approve or reject.">
-                <ReviewerPicker users={people.data ?? []} value={reviewerIds} onChange={setReviewerIds} />
-              </Field>
+              // Not a <Field>: that's a <label>, and a click anywhere in a
+              // label also clicks its first button (a chip's ×).
+              <div className="stack-sm">
+                <b className="small">Reviewers</b>
+                <ReviewerPicker value={reviewerIds} onChange={setReviewerIds} />
+                <div className="small faint">Invite at least one editor or admin — you can invite yourself. Any one of them can approve or reject.</div>
+              </div>
             ))}
           {pending === "start" && (
             <>
@@ -267,7 +271,7 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
                   ))}
                 </select>
               </Field>
-              <Field label="Release" hint="A gradual release serves the variant to a growing share of units; the rest keep the current defaults.">
+              <Field group label="Release" hint="A gradual release serves the variant to a growing share of units; the rest keep the current defaults.">
                 <RolloutChoice from={0} target={1000} value={gradual} onChange={setGradual} withStart noun="The launch" />
               </Field>
             </>
@@ -542,6 +546,16 @@ function TrafficPanel({ e, onChange, layer, free }: { e: Experiment; onChange: (
   );
 }
 
+// unitNoun names the units an experiment splits by: users, devices, or
+// e.g. "shop ids" for other diversions.
+export function unitNoun(key: string, name: string): string {
+  if (key === "user_id") return "users";
+  if (key === "device_id") return "devices";
+  return `${name.toLowerCase()}s`;
+}
+
+type WLSort = "newest" | "oldest" | "id" | "variant";
+
 function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
   const canEdit = useCan("editor");
   const diversions = useDiversions();
@@ -549,6 +563,10 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
   const [variant, setVariant] = useState<number>(e.variants?.find((v) => !v.is_control)?.id ?? 0);
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
+  const [q, setQ] = useState("");
+  const [only, setOnly] = useState(0);
+  const [sort, setSort] = useState<WLSort>("newest");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const name = (vid: number) => {
     const v = e.variants?.find((x) => x.id === vid);
     return v ? v.name || v.key : `#${vid}`;
@@ -564,53 +582,149 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
+  const remove = async (ids: string[]) => {
+    if (ids.length > 1 && !confirm(`Remove ${ids.length} test ${noun}?`)) return;
+    setError("");
+    try {
+      await api.removeWhitelistMany(e.id, ids);
+      setPicked(new Set());
+      reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
   const dname = diversionName(diversions, e.layer_diversion);
+  const noun = unitNoun(e.layer_diversion, dname);
+  const all = e.whitelist ?? [];
+  const query = q.trim().toLowerCase();
+  const found = all
+    .filter((w) => (!only || w.variant_id === only) && (!query || w.unit_id.toLowerCase().includes(query) || w.note.toLowerCase().includes(query)))
+    .sort((a, b) =>
+      sort === "id"
+        ? a.unit_id.localeCompare(b.unit_id, undefined, { numeric: true })
+        : sort === "variant"
+        ? name(a.variant_id).localeCompare(name(b.variant_id)) || a.unit_id.localeCompare(b.unit_id, undefined, { numeric: true })
+        : sort === "oldest"
+        ? a.created_at.localeCompare(b.created_at)
+        : b.created_at.localeCompare(a.created_at)
+    );
+  const paged = usePaged(found, 25, `${query}|${only}|${sort}`);
+  const pageIds = paged.slice.map((w) => w.unit_id);
+  const allOnPage = pageIds.length > 0 && pageIds.every((id) => picked.has(id));
+  const counts = new Map<number, number>();
+  for (const w of all) counts.set(w.variant_id, (counts.get(w.variant_id) ?? 0) + 1);
   return (
-    <div className="grid-2" style={{ alignItems: "start" }}>
+    <div className="grid-2" style={{ alignItems: "start", gridTemplateColumns: "minmax(0, 3fr) minmax(0, 2fr)" }}>
       <section className="card">
         <div className="card-head">
           <div>
-            <h2>Test users</h2>
+            <h2>
+              Test {noun} <span className="faint">({all.length})</span>
+            </h2>
             <p>
-              Whitelisted units (by {dname}) always get their variant — even before the experiment starts — and are
-              left out of reports.
+              Whitelisted {noun} (by <span className="mono">{e.layer_diversion}</span>) always get their variant — even before the experiment starts — and
+              are left out of reports.
             </p>
           </div>
         </div>
-        {(e.whitelist ?? []).length === 0 ? (
-          <Empty title="No test users" />
+        {all.length === 0 ? (
+          <Empty title={`No test ${noun}`} />
         ) : (
-          <table className="tbl tbl-compact">
-            <thead>
-              <tr>
-                <th>{dname}</th>
-                <th>Variant</th>
-                <th>Note</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {e.whitelist?.map((w) => (
-                <tr key={w.unit_id}>
-                  <td className="mono">{w.unit_id}</td>
-                  <td>{name(w.variant_id)}</td>
-                  <td className="faint">{w.note}</td>
-                  <td className="right">
-                    {canEdit && (
-                      <button className="icon-btn" aria-label="Remove" onClick={async () => { await api.removeWhitelist(e.id, w.unit_id); reload(); }}>
-                        <Icon name="trash" size={15} />
-                      </button>
-                    )}
-                  </td>
+          <>
+            <div className="row" style={{ gap: 8, padding: "10px 16px" }}>
+              <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder={`Search ${dname} or note…`} value={q} onChange={(x) => setQ(x.target.value)} />
+              <select className="input" style={{ width: 170 }} value={only} onChange={(x) => setOnly(Number(x.target.value))} aria-label="Variant">
+                <option value={0}>All variants</option>
+                {e.variants?.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name || v.key} ({counts.get(v.id!) ?? 0})
+                  </option>
+                ))}
+              </select>
+              <select className="input" style={{ width: 150 }} value={sort} onChange={(x) => setSort(x.target.value as WLSort)} aria-label="Sort">
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="id">By {dname}</option>
+                <option value="variant">By variant</option>
+              </select>
+            </div>
+            {canEdit && picked.size > 0 && (
+              <div className="row" style={{ gap: 8, padding: "0 16px 10px" }}>
+                <span className="small">{picked.size} selected</span>
+                <button className="btn btn-sm btn-danger" onClick={() => remove(Array.from(picked))}>
+                  <Icon name="trash" size={14} /> Remove selected
+                </button>
+                <button className="btn btn-sm btn-ghost" onClick={() => setPicked(new Set())}>
+                  Clear selection
+                </button>
+              </div>
+            )}
+            <table className="tbl tbl-compact">
+              <thead>
+                <tr>
+                  {canEdit && (
+                    <th style={{ width: 32 }}>
+                      <input
+                        type="checkbox"
+                        aria-label="Select this page"
+                        checked={allOnPage}
+                        onChange={() => {
+                          const next = new Set(picked);
+                          pageIds.forEach((id) => (allOnPage ? next.delete(id) : next.add(id)));
+                          setPicked(next);
+                        }}
+                      />
+                    </th>
+                  )}
+                  <th>{dname}</th>
+                  <th>Variant</th>
+                  <th>Note</th>
+                  <th>Added</th>
+                  <th />
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {paged.slice.map((w) => (
+                  <tr key={w.unit_id}>
+                    {canEdit && (
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${w.unit_id}`}
+                          checked={picked.has(w.unit_id)}
+                          onChange={() => {
+                            const next = new Set(picked);
+                            if (next.has(w.unit_id)) next.delete(w.unit_id);
+                            else next.add(w.unit_id);
+                            setPicked(next);
+                          }}
+                        />
+                      </td>
+                    )}
+                    <td className="mono">{w.unit_id}</td>
+                    <td>{name(w.variant_id)}</td>
+                    <td className="faint">{w.note}</td>
+                    <td className="faint small nowrap">{fmtDate(w.created_at)}</td>
+                    <td className="right">
+                      {canEdit && (
+                        <button className="icon-btn" aria-label="Remove" onClick={() => remove([w.unit_id])}>
+                          <Icon name="trash" size={15} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {found.length === 0 && <div className="small faint" style={{ padding: 16 }}>Nothing matches.</div>}
+            <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun={noun} />
+          </>
         )}
+        <ErrorBox error={error} />
       </section>
       {canEdit && !["stopped", "launched", "archived"].includes(e.status) && (
         <section className="card card-pad stack">
-          <h2>Add test users</h2>
+          <h2>Add test {noun}</h2>
           <Field
             label={`${dname}s`}
             hint={`This experiment splits by ${dname.toLowerCase()} (${e.layer_diversion}), so enter those ids — one per line, or separated by commas or spaces.`}
@@ -629,7 +743,6 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
           <Field label="Note">
             <input className="input" value={note} onChange={(x) => setNote(x.target.value)} placeholder="e.g. QA phone" />
           </Field>
-          <ErrorBox error={error} />
           <div>
             <button className="btn btn-primary" disabled={!units.trim()} onClick={add}>
               Add

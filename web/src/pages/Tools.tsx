@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ErrorBox, Field, Loading, StatusBadge, Tabs } from "../components/ui";
+import { Combobox } from "../components/Combobox";
+import { ErrorBox, Field, Icon, Loading, StatusBadge, Tabs } from "../components/ui";
 import { api } from "../lib/api";
 import { useDiversions } from "../lib/diversions";
 import { useAsync, useDebounced } from "../lib/hooks";
@@ -44,7 +45,9 @@ export default function Tools() {
 
 function Diagnose() {
   const diversions = useDiversions();
-  const [ids, setIds] = useState<Record<string, string>>({});
+  // Only the ids you add: pick a diversion, type its value.
+  const [rows, setRows] = useState<{ key: string; value: string }[]>([{ key: "user_id", value: "" }]);
+  const ids = Object.fromEntries(rows.filter((r) => r.key && r.value.trim()).map((r) => [r.key, r.value.trim()]));
   const [platform, setPlatform] = useState("");
   const [business, setBusiness] = useState("");
   const [attrs, setAttrs] = useState('{\n  "region": "ID",\n  "os": "android"\n}');
@@ -79,16 +82,49 @@ function Diagnose() {
   return (
     <div className="grid-2" style={{ gridTemplateColumns: "minmax(0, 360px) minmax(0, 1fr)", alignItems: "start" }}>
       <section className="card card-pad stack">
-        {diversions.map((d) => (
-          <Field key={d.key} label={d.name} hint={`Used by layers that split by ${d.key}.`}>
-            <input
-              className="input input-mono"
-              value={ids[d.key] ?? ""}
-              onChange={(e) => setIds({ ...ids, [d.key]: e.target.value })}
-              placeholder={d.key === "user_id" ? "demo-search-000042" : d.key === "device_id" ? "dev-search-000042" : d.key}
-            />
-          </Field>
-        ))}
+        <div className="stack-sm">
+          <b className="small">Unit ids</b>
+          {rows.map((r, i) => {
+            const taken = new Set(rows.filter((_, j) => j !== i).map((x) => x.key));
+            const d = diversions.find((x) => x.key === r.key);
+            return (
+              <div key={i} className="row" style={{ gap: 6, alignItems: "flex-start" }}>
+                <div style={{ width: 150 }}>
+                  <Combobox
+                    options={diversions.filter((x) => !taken.has(x.key)).map((x) => ({ value: x.key, label: x.name, hint: x.key }))}
+                    value={r.key}
+                    onChange={(v) => setRows(rows.map((x, j) => (j === i ? { ...x, key: v } : x)))}
+                    placeholder="Diversion"
+                  />
+                </div>
+                <input
+                  className="input input-mono"
+                  style={{ flex: 1, minWidth: 0 }}
+                  value={r.value}
+                  onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
+                  placeholder={r.key === "user_id" ? "demo-search-000042" : r.key === "device_id" ? "dev-search-000042" : d ? `${d.name} value` : "value"}
+                  aria-label={`${d?.name ?? "id"} value`}
+                />
+                <button className="icon-btn" aria-label="Remove" onClick={() => setRows(rows.filter((_, j) => j !== i))} disabled={rows.length === 1}>
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
+            );
+          })}
+          <div>
+            <button
+              className="btn btn-sm"
+              disabled={rows.length >= diversions.length}
+              onClick={() => {
+                const used = new Set(rows.map((r) => r.key));
+                setRows([...rows, { key: diversions.find((d) => !used.has(d.key))?.key ?? "", value: "" }]);
+              }}
+            >
+              <Icon name="plus" /> Add id
+            </button>
+          </div>
+          <div className="small faint">Each layer splits by one diversion; experiments whose id you don't send are skipped (the trace says so).</div>
+        </div>
         <div className="grid-2">
           <Field label="Platform" hint="What the service sends as platform.">
             <select

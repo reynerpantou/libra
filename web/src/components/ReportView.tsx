@@ -23,7 +23,11 @@ export function verdict(c: Comparison, m: Pick<MetricResult, "direction">): { te
     case "worse":
       return { text: `Significant negative ${arrow}`, cls: "b-bad", title: `Significant ${moved} — bad for this metric (${pref})` };
     case "changed":
-      return { text: `Significant ${moved} ${arrow}`, cls: "b-accent", title: "Significant change; this metric has no preferred direction" };
+      return {
+        text: `Significant ${arrow} · neutral`,
+        cls: "b-accent",
+        title: `Significant ${moved}. This metric is set to "either way", so Libra doesn't judge it good or bad — you decide`,
+      };
     case "flat":
       return { text: "Not significant", cls: "", title: "The confidence interval includes zero: no detectable difference" };
     default:
@@ -180,7 +184,7 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
               ))}
             </select>
           </Field>
-          <Field label="Significance">
+          <Field group label="Significance">
             <Segmented
               options={[
                 ["0.1", "90%"],
@@ -294,8 +298,9 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
                     {fmtInt(seg.units)} units · {r.from} to {r.to} · {Math.round((1 - r.alpha) * 100)}% confidence intervals · click a metric for its trend
                   </p>
                   <p className="small faint">
-                    <b>Significant positive</b> / <b>negative</b>: a real change that's good / bad for the metric (its direction decides — for latency, lower is
-                    better); the arrow shows which way it moved. <b>Not significant</b>: no detectable difference yet.
+                    <b>Significant positive</b> / <b>negative</b>: a real change that's good / bad for the metric (its "good when" setting decides — for latency,
+                    lower is better). <b>Significant · neutral</b>: a real change in a metric with no preferred direction (e.g. ads share), so it's not judged.
+                    Arrows show which way it moved. <b>Not significant</b>: no detectable difference yet.
                   </p>
                 </div>
               </div>

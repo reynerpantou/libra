@@ -89,8 +89,10 @@ export default function ExperimentForm() {
   const layer = refs.data?.layers.find((l) => l.id === layerId);
   const layerFree = mode === "auto" ? 1000 : layer ? 1000 - layer.used_buckets + (existing.data?.layer_id === layerId ? existing.data.traffic_held : 0) : 1000;
   const business = refs.data?.businesses.find((b) => b.id === businessId);
-  const platformKey = business?.platform_key ?? existing.data?.platform_key ?? "";
   const shownPlatform = business?.platform_key ?? platformPick;
+  // The params wrapper follows the platform as soon as one is chosen, even
+  // before the business.
+  const platformKey = business?.platform_key ?? existing.data?.platform_key ?? platformPick;
   const platformOptions = Array.from(new Map((refs.data?.businesses ?? []).map((b) => [b.platform_key, b.platform_name])).entries())
     .sort((a, b) => a[1].localeCompare(b[1]))
     .map(([key, name]) => ({ value: key, label: name, hint: key }));
@@ -123,6 +125,10 @@ export default function ExperimentForm() {
 
   const save = async () => {
     setError("");
+    if (!platformKey || !businessId) {
+      setError("Choose the platform and business first.");
+      return;
+    }
     if (paramErrors.some(Boolean)) {
       setError("Fix the variant parameters (they must be JSON objects).");
       return;
@@ -285,6 +291,7 @@ export default function ExperimentForm() {
                 </select>
               </Field>
               <Field
+                group
                 label={`Traffic: ${trafficPct(traffic)}`}
                 hint={locked ? "Change traffic from the experiment page (ramping keeps current units in)." : "Start small and ramp up from the experiment page, or go straight to 100%."}
               >
@@ -420,7 +427,10 @@ export default function ExperimentForm() {
                   label="Parameters (JSON)"
                   hint={paramErrors[i] ? <span style={{ color: "var(--bad)" }}>{paramErrors[i]}</span> : "Tab / Shift+Tab indent. Esc, then Tab, moves to the next field."}
                 >
-                  <NamespacedJson platformKey={platformKey} platformName={business?.platform_name ?? ""}>
+                  <NamespacedJson
+                    platformKey={platformKey}
+                    platformName={business?.platform_name ?? platformOptions.find((o) => o.value === platformKey)?.label ?? ""}
+                  >
                   <JsonEditor
                     disabled={locked}
                     invalid={!!paramErrors[i]}
