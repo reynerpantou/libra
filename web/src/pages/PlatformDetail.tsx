@@ -6,7 +6,7 @@ import { useCan } from "../lib/auth";
 import { useAsync } from "../lib/hooks";
 import type { Business, EventSummary, Platform, Scope } from "../lib/types";
 import { Groups, Measures, Metrics } from "./BusinessDetail";
-import { BusinessModal, BusinessTable, PlatformModal } from "./Businesses";
+import { BusinessModal, BusinessTable, DeleteBusinessModal, PlatformModal } from "./Businesses";
 
 type Tab = "businesses" | "metrics" | "measures" | "groups";
 
@@ -132,7 +132,7 @@ function ManageBusinesses({ platform, reload }: { platform: Platform; reload: ()
   const all = useAsync(() => api.platforms(), []);
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState<Business | "new" | null>(null);
-  const [error, setError] = useState("");
+  const [deleting, setDeleting] = useState<Business | null>(null);
   const query = q.trim().toLowerCase();
   const list = platform.businesses.filter(
     (b) => !query || [b.name, b.key, String(b.id), b.description].some((x) => x.toLowerCase().includes(query))
@@ -152,7 +152,6 @@ function ManageBusinesses({ platform, reload }: { platform: Platform; reload: ()
           </button>
         )}
       </div>
-      <ErrorBox error={error} />
       {list.length === 0 ? (
         <Empty title={platform.businesses.length ? "Nothing matches" : "No businesses yet"}>
           {!platform.businesses.length && <p>Add the businesses of {platform.name} — e.g. Search, Ads, Recommendation.</p>}
@@ -167,28 +166,23 @@ function ManageBusinesses({ platform, reload }: { platform: Platform; reload: ()
                     <button className="icon-btn" aria-label="Edit" title="Edit or move to another platform" onClick={() => setEditing(b)}>
                       <Icon name="edit" size={15} />
                     </button>
-                    <button
-                      className="icon-btn"
-                      aria-label="Delete"
-                      disabled={b.experiments > 0}
-                      title={b.experiments > 0 ? "Businesses with experiments can't be deleted" : "Delete"}
-                      onClick={async () => {
-                        if (!confirm(`Delete ${b.name} with its measures, metrics, groups and events?`)) return;
-                        setError("");
-                        try {
-                          await api.deleteBusiness(b.id);
-                          reload();
-                        } catch (e) {
-                          setError(e instanceof Error ? e.message : String(e));
-                        }
-                      }}
-                    >
+                    <button className="icon-btn" aria-label="Delete" title="Delete" onClick={() => setDeleting(b)}>
                       <Icon name="trash" size={15} />
                     </button>
                   </>
                 )
               : undefined
           }
+        />
+      )}
+      {deleting && (
+        <DeleteBusinessModal
+          business={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={() => {
+            setDeleting(null);
+            reload();
+          }}
         />
       )}
       {editing && (

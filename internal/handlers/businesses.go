@@ -156,6 +156,36 @@ func (s *Server) UpdateBusiness(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, b)
 }
 
+// DeleteCheck says whether a business can be deleted, and what deleting it
+// would remove, so the UI can explain before anyone clicks delete.
+func (s *Server) DeleteCheck(w http.ResponseWriter, r *http.Request) {
+	id, _ := pathID(r, "id")
+	var out struct {
+		Experiments         int `json:"experiments"`           // any status, archived included: these block deleting
+		ActiveExperiments   int `json:"active_experiments"`    // running or paused
+		Measures            int `json:"measures"`              // deleted with it
+		Metrics             int `json:"metrics"`               // deleted with it
+		Groups              int `json:"groups"`                // deleted with it
+		Events              int `json:"events"`                // deleted with it
+		OtherExperimentsUse int `json:"other_experiments_use"` // experiments of other businesses reporting its groups
+	}
+	err := s.DB.QueryRowContext(r.Context(), `
+		SELECT (SELECT count(*) FROM experiments WHERE business_id = $1),
+		       (SELECT count(*) FROM experiments WHERE business_id = $1 AND status IN ('active', 'paused')),
+		       (SELECT count(*) FROM measures WHERE business_id = $1),
+		       (SELECT count(*) FROM metrics WHERE business_id = $1),
+		       (SELECT count(*) FROM metric_groups WHERE business_id = $1),
+		       (SELECT count(*) FROM events WHERE business_id = $1),
+		       (SELECT count(*) FROM experiments e WHERE e.business_id <> $1
+		          AND e.metric_group_ids && ARRAY(SELECT id FROM metric_groups WHERE business_id = $1))`, id).
+		Scan(&out.Experiments, &out.ActiveExperiments, &out.Measures, &out.Metrics, &out.Groups, &out.Events, &out.OtherExperimentsUse)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // DeleteBusiness removes a business with no experiments, along with its
 // measures, metrics, groups and events.
 func (s *Server) DeleteBusiness(w http.ResponseWriter, r *http.Request) {
@@ -166,16 +196,31 @@ func (s *Server) DeleteBusiness(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if n > 0 {
-		badRequest(w, fmt.Sprintf("the business has %d experiment(s); a business with experiments can't be deleted (their history needs it)", n))
+		badRequest(w, fmt.Sprintf("the business has %d experiment(s), archived ones included; a business with experiments can't be deleted because their reports and history need it", n))
 		return
 	}
-	res, err := s.DB.ExecContext(r.Context(), `DELETE FROM businesses WHERE id = $1`, id)
+	tx, err := s.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	// Events aren't tied by a foreign key (they're append-only and large).
+	if _, err := tx.ExecContext(r.Context(), `DELETE FROM events WHERE business_id = $1`, id); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	res, err := tx.ExecContext(r.Context(), `DELETE FROM businesses WHERE id = $1`, id)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		notFound(w, "business")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		serverError(w, r, err)
 		return
 	}
 	_ = audit(r.Context(), s.DB, user(r).ID, 0, "business", id, "delete", "", "", nil)

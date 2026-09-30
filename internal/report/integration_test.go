@@ -145,6 +145,24 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("video preview latency should be worse: %+v", lat)
 	}
 
+	// An empty default group (a platform's new default group before any
+	// metrics are added) is left out rather than shown empty.
+	if _, err := db.Exec(`INSERT INTO metric_groups (business_id, name, is_default, metric_ids) SELECT business_id, 'Empty default', true, '{}' FROM experiments WHERE id = $1`, expID); err != nil {
+		t.Fatal(err)
+	}
+	re, err := report.Compute(ctx, db, expID, report.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range re.Groups {
+		if len(g.MetricIDs) == 0 || g.Name == "Empty default" {
+			t.Errorf("empty group in report: %+v", g)
+		}
+	}
+	if _, err := db.Exec(`DELETE FROM metric_groups WHERE name = 'Empty default'`); err != nil {
+		t.Fatal(err)
+	}
+
 	// Dimension breakdown returns segments by region.
 	rd, err := report.Compute(ctx, db, expID, report.Options{MetricIDs: defs.Order[:1], Dimension: "region"})
 	if err != nil {

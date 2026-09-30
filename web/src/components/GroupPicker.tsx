@@ -42,7 +42,7 @@ export function GroupPicker({
     return (
       g.name.toLowerCase().includes(s) ||
       g.owner.toLowerCase().includes(s) ||
-      g.metric_ids.some((id) => (metricName.get(id) ?? "").toLowerCase().includes(s))
+      (g.metric_ids ?? []).some((id) => (metricName.get(id) ?? "").toLowerCase().includes(s))
     );
   };
   const toggle = (id: number) => onChange(selected.has(id) ? value.filter((x) => x !== id) : [...value, id]);
@@ -85,13 +85,13 @@ export function GroupPicker({
                   const auto = isAuto(g);
                   const on = auto || selected.has(g.id);
                   return (
-                    <label key={g.id} className={`gpick-item ${on ? "on" : ""}`} title={g.metric_ids.map((id) => metricName.get(id) ?? `#${id}`).join(", ")}>
+                    <label key={g.id} className={`gpick-item ${on ? "on" : ""}`} title={(g.metric_ids ?? []).map((id) => metricName.get(id) ?? `#${id}`).join(", ")}>
                       <input type="checkbox" checked={on} disabled={auto} onChange={() => toggle(g.id)} />
                       <span style={{ minWidth: 0 }}>
                         <span style={{ fontWeight: 600 }}>{g.name}</span>{" "}
                         {auto ? <span className="badge b-good">default · always</span> : g.is_default ? <span className="badge">default there</span> : null}
                         <span className="faint small" style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {g.metric_ids.length} metrics: {g.metric_ids.map((id) => metricName.get(id) ?? `#${id}`).join(", ")}
+                          {(g.metric_ids ?? []).length} metrics: {(g.metric_ids ?? []).map((id) => metricName.get(id) ?? `#${id}`).join(", ")}
                         </span>
                       </span>
                     </label>

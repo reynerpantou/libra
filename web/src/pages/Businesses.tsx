@@ -417,6 +417,94 @@ export function BusinessModal({
   );
 }
 
+// DeleteBusinessModal explains what deleting a business would remove, or
+// why it can't be deleted, before anything happens.
+export function DeleteBusinessModal({ business, onClose, onDeleted }: { business: Business; onClose: () => void; onDeleted: () => void }) {
+  const check = useAsync(() => api.deleteCheck(business.id), [business.id]);
+  const [typed, setTyped] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const c = check.data;
+  const blocked = !!c && c.experiments > 0;
+  const hasData = !!c && c.measures + c.metrics + c.groups + c.events > 0;
+  const ready = !!c && !blocked && (!hasData || typed === business.key);
+  const del = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await api.deleteBusiness(business.id);
+      onDeleted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title={blocked ? `${business.name} can't be deleted` : `Delete ${business.name}?`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            {blocked ? "Close" : "Cancel"}
+          </button>
+          {!blocked && (
+            <button className="btn btn-danger" disabled={!ready || busy} onClick={del}>
+              Delete business
+            </button>
+          )}
+        </>
+      }
+    >
+      {check.loading && !c ? (
+        <Loading label="Checking what depends on it…" />
+      ) : !c ? (
+        <ErrorBox error={check.error} />
+      ) : blocked ? (
+        <div className="stack-sm">
+          <div className="alert alert-warn small">
+            It has <b>{c.experiments}</b> experiment{c.experiments === 1 ? "" : "s"}
+            {c.active_experiments > 0 && <> ({c.active_experiments} running)</>}, archived ones included. Experiments keep their reports and history,
+            which need their business — so a business with experiments can't be deleted. Its metrics aren't what blocks it; they would be deleted along
+            with it.
+          </div>
+          <p className="small muted">
+            Options: keep it (rename it or edit its description), or <b>move it</b> to another platform with the edit button.
+          </p>
+          <Link className="btn btn-sm" style={{ alignSelf: "flex-start" }} to={`/experiments?business=${business.key}`} onClick={onClose}>
+            View its experiments
+          </Link>
+        </div>
+      ) : (
+        <div className="stack-sm">
+          {hasData ? (
+            <>
+              <p className="muted">This permanently deletes the business and everything defined in it:</p>
+              <ul className="small" style={{ margin: 0, paddingLeft: 18 }}>
+                <li>{c.metrics} metrics and {c.measures} measures</li>
+                <li>{c.groups} metric groups</li>
+                <li>{c.events.toLocaleString()} received events</li>
+              </ul>
+              {c.other_experiments_use > 0 && (
+                <div className="alert alert-warn small">
+                  {c.other_experiments_use} experiment(s) of other businesses report its metric groups; those sections will disappear from their reports.
+                </div>
+              )}
+              <Field label={`Type ${business.key} to confirm`}>
+                <input className="input input-mono" value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
+              </Field>
+            </>
+          ) : (
+            <p className="muted">It has no experiments, metrics or events. It can be deleted safely.</p>
+          )}
+        </div>
+      )}
+      <ErrorBox error={error} />
+    </Modal>
+  );
+}
+
 export const slug = (s: string) =>
   s
     .toLowerCase()

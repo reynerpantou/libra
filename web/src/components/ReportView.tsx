@@ -197,7 +197,7 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
               </div>
               {r.groups.map((g) => {
                 const byId = new Map(seg.metrics.map((m) => [m.metric_id, m]));
-                const ms = g.metric_ids.map((id) => byId.get(id)).filter((m): m is MetricResult => !!m);
+                const ms = (g.metric_ids ?? []).map((id) => byId.get(id)).filter((m): m is MetricResult => !!m);
                 return (
                   <div key={`${g.id}-${g.name}`} className="rep-group">
                     {(r.groups.length > 1 || g.id !== 0) && (
