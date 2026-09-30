@@ -107,6 +107,44 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
+	// The card layout experiment: 8 variants on a dedicated (auto) layer,
+	// with its own groups from two businesses plus the platform defaults.
+	var cardID int64
+	var auto bool
+	if err := db.QueryRow(`SELECT e.id, l.auto FROM experiments e JOIN layers l ON l.id = e.layer_id WHERE e.name = 'Result card layout'`).Scan(&cardID, &auto); err != nil || !auto {
+		t.Fatalf("card experiment: auto=%v err=%v", auto, err)
+	}
+	rc, err := report.Compute(ctx, db, cardID, report.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rc.Variants) != 8 || len(rc.Segments[0].Metrics[0].Comparisons) != 7 {
+		t.Errorf("card experiment: %d variants", len(rc.Variants))
+	}
+	var names []string
+	for _, g := range rc.Groups {
+		names = append(names, g.Owner+"/"+g.Name)
+	}
+	if len(rc.Groups) != 4 || !rc.Groups[0].IsDefault || rc.Groups[0].Name != "Platform guardrails" {
+		t.Errorf("card experiment groups: %v", names)
+	}
+	cardKeys := map[string]report.MetricResult{}
+	for _, m := range rc.Segments[0].Metrics {
+		if m.Error != "" {
+			t.Errorf("card metric %s: %s", m.Key, m.Error)
+		}
+		cardKeys[m.Key] = m
+	}
+	for _, k := range []string{"feed_ctr", "avg_latency_ms", "ctr", "gmv_per_user"} {
+		if _, ok := cardKeys[k]; !ok {
+			t.Errorf("card report is missing %s (have %d metrics)", k, len(cardKeys))
+		}
+	}
+	// "video" (last variant) is 25% slower on search.
+	if lat := cardKeys["avg_latency_ms"].Comparisons[6]; lat.Verdict != "worse" {
+		t.Errorf("video preview latency should be worse: %+v", lat)
+	}
+
 	// Dimension breakdown returns segments by region.
 	rd, err := report.Compute(ctx, db, expID, report.Options{MetricIDs: defs.Order[:1], Dimension: "region"})
 	if err != nil {

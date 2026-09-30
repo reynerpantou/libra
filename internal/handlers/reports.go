@@ -37,6 +37,15 @@ func reportOptions(r *http.Request) (report.Options, string) {
 			o.MetricIDs = append(o.MetricIDs, id)
 		}
 	}
+	if v := q.Get("groups"); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			id, err := strconv.ParseInt(part, 10, 64)
+			if err != nil {
+				return o, "groups must be a list of ids"
+			}
+			o.GroupIDs = append(o.GroupIDs, id)
+		}
+	}
 	if v := q.Get("alpha"); v != "" {
 		a, err := strconv.ParseFloat(v, 64)
 		if err != nil || a <= 0 || a >= 0.5 {

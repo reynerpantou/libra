@@ -80,7 +80,7 @@ func (s *Store) Watch(ctx context.Context, every time.Duration) {
 // Load reads every experiment that can affect serving into a snapshot.
 func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, error) {
 	var layers []*assign.Layer
-	rows, err := db.QueryContext(ctx, `SELECT id, name, salt, diversion FROM layers`)
+	rows, err := db.QueryContext(ctx, `SELECT id, name, salt, diversion FROM layers`) // auto layers included
 	if err != nil {
 		return nil, err
 	}
@@ -318,6 +318,7 @@ type Event struct {
 	Name       string
 	UnitID     string // user id; may be empty when DeviceID is set
 	DeviceID   string
+	IDs        []byte // JSON object of other diversion ids, e.g. {"shop_id":"s-1"}
 	TS         time.Time
 	Value      float64
 	Props      []byte // JSON object
@@ -335,7 +336,12 @@ func WriteEvents(ctx context.Context, db *sql.DB, xs []Event) error {
 	vals := make([]float64, len(xs))
 	props := make([]string, len(xs))
 	devices := make([]*string, len(xs))
+	ids := make([]string, len(xs))
 	for i, x := range xs {
+		ids[i] = "{}"
+		if len(x.IDs) > 0 {
+			ids[i] = string(x.IDs)
+		}
 		if x.DeviceID != "" {
 			d := x.DeviceID
 			devices[i] = &d
@@ -347,9 +353,9 @@ func WriteEvents(ctx context.Context, db *sql.DB, xs []Event) error {
 		}
 	}
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO events (business_id, event_name, unit_id, ts, value, props, device_id)
-		SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::timestamptz[], $5::float8[], $6::jsonb[], $7::text[])`,
-		biz, names, units, ts, vals, props, devices)
+		INSERT INTO events (business_id, event_name, unit_id, ts, value, props, device_id, ids)
+		SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::timestamptz[], $5::float8[], $6::jsonb[], $7::text[], $8::jsonb[])`,
+		biz, names, units, ts, vals, props, devices, ids)
 	return err
 }
 

@@ -17,11 +17,12 @@ import (
 const MaxBatch = 5000
 
 type resolveRequest struct {
-	UserID   string         `json:"user_id,omitempty"`
-	DeviceID string         `json:"device_id,omitempty"`
-	UnitID   string         `json:"unit_id,omitempty"` // older name for user_id
-	Business string         `json:"business,omitempty"`
-	Attrs    map[string]any `json:"attrs,omitempty"`
+	UserID   string            `json:"user_id,omitempty"`
+	DeviceID string            `json:"device_id,omitempty"`
+	IDs      map[string]string `json:"ids,omitempty"`     // other diversions, e.g. {"shop_id": "s-1"}
+	UnitID   string            `json:"unit_id,omitempty"` // older name for user_id
+	Business string            `json:"business,omitempty"`
+	Attrs    map[string]any    `json:"attrs,omitempty"`
 	// LogExposure records exposures (default true). Set false when the
 	// caller only prefetches config and will report exposures itself.
 	LogExposure *bool `json:"log_exposure,omitempty"`
@@ -50,12 +51,12 @@ func (s *Server) Resolve(w http.ResponseWriter, r *http.Request) {
 	if req.UserID == "" {
 		req.UserID = strings.TrimSpace(req.UnitID)
 	}
-	if (req.UserID == "" && req.DeviceID == "") || len(req.UserID) > 200 || len(req.DeviceID) > 200 {
-		badRequest(w, "send user_id, device_id, or both (up to 200 characters each)")
+	if msg := checkIDs(req.UserID, req.DeviceID, req.IDs); msg != "" {
+		badRequest(w, msg)
 		return
 	}
 	snap := s.Store.Snapshot()
-	res := snap.Resolve(assign.Request{UserID: req.UserID, DeviceID: req.DeviceID, Business: req.Business, Attrs: req.Attrs}, req.Debug)
+	res := snap.Resolve(assign.Request{UserID: req.UserID, DeviceID: req.DeviceID, IDs: req.IDs, Business: req.Business, Attrs: req.Attrs}, req.Debug)
 	if req.LogExposure == nil || *req.LogExposure {
 		now := time.Now().UTC()
 		attrs := serving.DimensionAttrs(req.Attrs)
@@ -72,13 +73,14 @@ func (s *Server) Resolve(w http.ResponseWriter, r *http.Request) {
 }
 
 type exposureIn struct {
-	ExperimentID int64          `json:"experiment_id"`
-	VariantID    int64          `json:"variant_id"`
-	UserID       string         `json:"user_id,omitempty"`
-	DeviceID     string         `json:"device_id,omitempty"`
-	UnitID       string         `json:"unit_id,omitempty"` // older name for user_id
-	TS           *time.Time     `json:"ts,omitempty"`
-	Attrs        map[string]any `json:"attrs,omitempty"`
+	ExperimentID int64             `json:"experiment_id"`
+	VariantID    int64             `json:"variant_id"`
+	UserID       string            `json:"user_id,omitempty"`
+	DeviceID     string            `json:"device_id,omitempty"`
+	IDs          map[string]string `json:"ids,omitempty"`
+	UnitID       string            `json:"unit_id,omitempty"` // older name for user_id
+	TS           *time.Time        `json:"ts,omitempty"`
+	Attrs        map[string]any    `json:"attrs,omitempty"`
 }
 
 // IngestExposures accepts exposures reported by clients that resolved
@@ -115,7 +117,7 @@ func (s *Server) IngestExposures(w http.ResponseWriter, r *http.Request) {
 	var rejected []map[string]any
 	for i, x := range req.Exposures {
 		diversion, ok := valid[[2]int64{x.ExperimentID, x.VariantID}]
-		unit := strings.TrimSpace(assign.Request{UserID: x.UserID, DeviceID: x.DeviceID, UnitID: x.UnitID}.ID(diversion))
+		unit := strings.TrimSpace(assign.Request{UserID: x.UserID, DeviceID: x.DeviceID, IDs: x.IDs, UnitID: x.UnitID}.ID(diversion))
 		switch {
 		case !ok:
 			rejected = append(rejected, map[string]any{"index": i, "error": "not a variant of a running experiment"})
@@ -137,14 +139,15 @@ func (s *Server) IngestExposures(w http.ResponseWriter, r *http.Request) {
 }
 
 type eventIn struct {
-	Business string          `json:"business"`
-	Event    string          `json:"event"`
-	UserID   string          `json:"user_id,omitempty"`
-	DeviceID string          `json:"device_id,omitempty"`
-	UnitID   string          `json:"unit_id,omitempty"` // older name for user_id
-	TS       *time.Time      `json:"ts,omitempty"`
-	Value    *float64        `json:"value,omitempty"`
-	Props    json.RawMessage `json:"props,omitempty"`
+	Business string            `json:"business"`
+	Event    string            `json:"event"`
+	UserID   string            `json:"user_id,omitempty"`
+	DeviceID string            `json:"device_id,omitempty"`
+	IDs      map[string]string `json:"ids,omitempty"`     // other diversion ids
+	UnitID   string            `json:"unit_id,omitempty"` // older name for user_id
+	TS       *time.Time        `json:"ts,omitempty"`
+	Value    *float64          `json:"value,omitempty"`
+	Props    json.RawMessage   `json:"props,omitempty"`
 }
 
 // IngestEvents accepts business events: the raw material measures are
@@ -186,8 +189,8 @@ func (s *Server) IngestEvents(w http.ResponseWriter, r *http.Request) {
 		case name == "" || len(name) > 120:
 			rejected = append(rejected, map[string]any{"index": i, "error": "event is required"})
 			continue
-		case (unit == "" && device == "") || len(unit) > 200 || len(device) > 200:
-			rejected = append(rejected, map[string]any{"index": i, "error": "send user_id, device_id, or both"})
+		case checkIDs(unit, device, x.IDs) != "":
+			rejected = append(rejected, map[string]any{"index": i, "error": checkIDs(unit, device, x.IDs)})
 			continue
 		case len(props) > 0 && (json.Unmarshal(props, &obj) != nil || obj == nil):
 			rejected = append(rejected, map[string]any{"index": i, "error": "props must be a JSON object"})
@@ -208,7 +211,7 @@ func (s *Server) IngestEvents(w http.ResponseWriter, r *http.Request) {
 		if x.Value != nil {
 			val = *x.Value
 		}
-		batch = append(batch, serving.Event{BusinessID: bid, Name: name, UnitID: unit, DeviceID: device, TS: ts, Value: val, Props: props})
+		batch = append(batch, serving.Event{BusinessID: bid, Name: name, UnitID: unit, DeviceID: device, IDs: idsJSON(x.IDs), TS: ts, Value: val, Props: props})
 	}
 	if err := serving.WriteEvents(r.Context(), s.DB, batch); err != nil {
 		serverError(w, r, err)
@@ -255,4 +258,41 @@ func (s *Server) businessID(ctx context.Context, key string) (int64, error) {
 		bizCache.ids, bizCache.loaded = ids, time.Now()
 	}
 	return bizCache.ids[key], nil
+}
+
+// checkIDs validates a request's ids: at least one, each reasonably short.
+func checkIDs(user, device string, ids map[string]string) string {
+	if len(ids) > 10 {
+		return "at most 10 extra ids"
+	}
+	any := user != "" || device != ""
+	for k, v := range ids {
+		if len(k) > 40 || len(v) > 200 {
+			return "ids: keys up to 40 and values up to 200 characters"
+		}
+		if v != "" {
+			any = true
+		}
+	}
+	if !any {
+		return "send user_id, device_id, or another id in ids"
+	}
+	if len(user) > 200 || len(device) > 200 {
+		return "ids can be at most 200 characters"
+	}
+	return ""
+}
+
+func idsJSON(ids map[string]string) []byte {
+	clean := map[string]string{}
+	for k, v := range ids {
+		if v = strings.TrimSpace(v); v != "" && k != assign.DiversionUser && k != assign.DiversionDevice {
+			clean[k] = v
+		}
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(clean)
+	return b
 }

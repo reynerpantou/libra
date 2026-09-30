@@ -145,6 +145,20 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("POST /businesses/{id}/metric-groups", editor(s.CreateMetricGroup))
 	api.Handle("PUT /metric-groups/{id}", editor(s.UpdateMetricGroup))
 	api.Handle("DELETE /metric-groups/{id}", editor(s.DeleteMetricGroup))
+	api.Handle("GET /platforms", viewer(s.ListPlatforms))
+	api.Handle("POST /platforms", admin(s.CreatePlatform))
+	api.Handle("GET /platforms/{pid}", viewer(s.GetPlatform))
+	api.Handle("PUT /platforms/{pid}", admin(s.UpdatePlatform))
+	api.Handle("GET /platforms/{pid}/measures", viewer(s.ListMeasures))
+	api.Handle("POST /platforms/{pid}/measures", editor(s.CreateMeasure))
+	api.Handle("GET /platforms/{pid}/metrics", viewer(s.ListMetrics))
+	api.Handle("POST /platforms/{pid}/metrics", editor(s.CreateMetric))
+	api.Handle("POST /platforms/{pid}/formula/validate", viewer(s.ValidateFormula))
+	api.Handle("POST /platforms/{pid}/formula/preview", viewer(s.PreviewFormula))
+	api.Handle("GET /platforms/{pid}/metric-groups", viewer(s.ListMetricGroups))
+	api.Handle("POST /platforms/{pid}/metric-groups", editor(s.CreateMetricGroup))
+	api.Handle("GET /metric-groups", viewer(s.AllMetricGroups))
+	api.Handle("GET /metrics", viewer(s.AllMetrics))
 	api.Handle("GET /businesses/{id}/events/summary", viewer(s.EventSummary))
 	api.Handle("GET /businesses/{id}/events/recent", viewer(s.RecentEvents))
 
@@ -166,6 +180,10 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("GET /experiments/{id}/trend", viewer(s.ExperimentTrend))
 	api.Handle("GET /experiments/{id}/exposures", viewer(s.ExposureDaily))
 	api.Handle("GET /experiments/{id}/params", viewer(s.ParamUsage))
+	api.Handle("GET /diversions", viewer(s.ListDiversions))
+	api.Handle("POST /diversions", admin(s.CreateDiversion))
+	api.Handle("PUT /diversions/{key}", admin(s.UpdateDiversion))
+	api.Handle("DELETE /diversions/{key}", admin(s.DeleteDiversion))
 	api.Handle("GET /attributes", viewer(s.ListAttributes))
 	api.Handle("GET /attributes/discovered", viewer(s.DiscoveredAttributes))
 	api.Handle("POST /attributes", editor(s.CreateAttribute))
@@ -357,7 +375,7 @@ func runCommand(db *sql.DB, cfg config.Config, cmd string, args []string) error 
 			if err := simulate.Seed(ctx, db, owner); err != nil && !errors.Is(err, simulate.ErrSeeded) {
 				return err
 			} else if err == nil {
-				fmt.Println(`seeded business "search": 8 measures, 10 metrics, 3 metric groups, 2 layers, 3 experiments`)
+				fmt.Println(`seeded platform "shop" with businesses "search" and "reco": metrics, metric groups, 3 layers and 5 experiments`)
 			} else {
 				fmt.Println(`business "search" already exists; adding traffic`)
 			}

@@ -22,8 +22,8 @@ func (s *Server) Diagnose(w http.ResponseWriter, r *http.Request) {
 	if req.UserID == "" {
 		req.UserID = strings.TrimSpace(req.UnitID)
 	}
-	if req.UserID == "" && req.DeviceID == "" {
-		badRequest(w, "enter a user id, a device id, or both")
+	if msg := checkIDs(req.UserID, req.DeviceID, req.IDs); msg != "" {
+		badRequest(w, msg)
 		return
 	}
 	snap := s.Store.Snapshot()

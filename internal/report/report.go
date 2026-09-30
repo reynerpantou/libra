@@ -18,7 +18,8 @@ import (
 // Options select what a report covers.
 type Options struct {
 	From, To  time.Time // inclusive UTC days; zero = experiment start / today
-	MetricIDs []int64   // empty = the experiment's metric group, else all metrics
+	MetricIDs []int64   // explicit metrics; wins over GroupIDs
+	GroupIDs  []int64   // metric groups to show; empty = the experiment's groups plus defaults
 	Alpha     float64   // significance level; 0 = 0.05
 	Dimension string    // optional request attribute to break results down by
 }
@@ -82,40 +83,53 @@ type SRM struct {
 }
 
 type Report struct {
-	ExperimentID  int64     `json:"experiment_id"`
-	From          string    `json:"from"`
-	To            string    `json:"to"`
-	Alpha         float64   `json:"alpha"`
-	Dimension     string    `json:"dimension,omitempty"`
-	Variants      []Variant `json:"variants"`
-	SRM           SRM       `json:"srm"`
-	MultiVariant  int64     `json:"excluded_multi_variant_units"`
-	Segments      []Segment `json:"segments"`
-	Dimensions    []string  `json:"available_dimensions"`
-	DataThrough   *string   `json:"data_through,omitempty"` // last successful pipeline run
-	ComputedAt    string    `json:"computed_at"`
-	SegmentsCut   int       `json:"segments_not_shown,omitempty"`
-	MetricGroupID *int64    `json:"metric_group_id,omitempty"`
+	ExperimentID int64     `json:"experiment_id"`
+	From         string    `json:"from"`
+	To           string    `json:"to"`
+	Alpha        float64   `json:"alpha"`
+	Dimension    string    `json:"dimension,omitempty"`
+	Variants     []Variant `json:"variants"`
+	SRM          SRM       `json:"srm"`
+	MultiVariant int64     `json:"excluded_multi_variant_units"`
+	Segments     []Segment `json:"segments"`
+	Dimensions   []string  `json:"available_dimensions"`
+	DataThrough  *string   `json:"data_through,omitempty"` // last successful pipeline run
+	ComputedAt   string    `json:"computed_at"`
+	SegmentsCut  int       `json:"segments_not_shown,omitempty"`
+	// Groups lists the metric groups shown, in order; each metric result
+	// appears once in Segments and is referenced by id from its groups.
+	Groups []Group `json:"groups"`
+}
+
+// Group is a set of metrics shown together in a report.
+type Group struct {
+	ID        int64   `json:"id"` // 0 for "all metrics" / an explicit selection
+	Name      string  `json:"name"`
+	Owner     string  `json:"owner"` // "Search" or "TikTok Shop (platform)"
+	IsDefault bool    `json:"is_default"`
+	MetricIDs []int64 `json:"metric_ids"`
 }
 
 // MaxSegments caps a dimension breakdown to its largest values.
 const MaxSegments = 12
 
 type experimentInfo struct {
-	businessID    int64
-	metricGroupID sql.NullInt64
-	startedAt     sql.NullTime
-	endedAt       sql.NullTime
-	createdAt     time.Time
-	variants      []Variant
+	businessID int64
+	groupIDs   []int64
+	startedAt  sql.NullTime
+	endedAt    sql.NullTime
+	createdAt  time.Time
+	variants   []Variant
 }
 
 var ErrNotFound = errors.New("experiment not found")
 
 func loadExperiment(ctx context.Context, db *sql.DB, id int64) (*experimentInfo, error) {
 	e := &experimentInfo{}
-	err := db.QueryRowContext(ctx, `SELECT business_id, metric_group_id, started_at, ended_at, created_at FROM experiments WHERE id = $1`, id).
-		Scan(&e.businessID, &e.metricGroupID, &e.startedAt, &e.endedAt, &e.createdAt)
+	var groups string
+	err := db.QueryRowContext(ctx, `SELECT business_id, array_to_string(metric_group_ids, ','), started_at, ended_at, created_at FROM experiments WHERE id = $1`, id).
+		Scan(&e.businessID, &groups, &e.startedAt, &e.endedAt, &e.createdAt)
+	e.groupIDs = parseIDs(groups)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -160,28 +174,165 @@ func (e *experimentInfo) window(o Options) (time.Time, time.Time) {
 	return day(from), day(to)
 }
 
-// selectMetrics resolves which metrics a report shows.
-func selectMetrics(ctx context.Context, db *sql.DB, defs *Definitions, e *experimentInfo, ids []int64) ([]MetricDef, error) {
-	if len(ids) == 0 && e.metricGroupID.Valid {
+func parseIDs(raw string) []int64 {
+	var out []int64
+	for _, p := range strings.Split(raw, ",") {
+		var id int64
+		if _, err := fmt.Sscan(strings.TrimSpace(p), &id); err == nil {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// catalog loads each scope's definitions once per report.
+type catalog struct {
+	ctx      context.Context
+	db       *sql.DB
+	byScope  map[Scope]*Definitions
+	measures map[int64]pipeline.Measure
+}
+
+func newCatalog(ctx context.Context, db *sql.DB) *catalog {
+	return &catalog{ctx: ctx, db: db, byScope: map[Scope]*Definitions{}, measures: map[int64]pipeline.Measure{}}
+}
+
+func (c *catalog) defs(sc Scope) (*Definitions, error) {
+	if d, ok := c.byScope[sc]; ok {
+		return d, nil
+	}
+	d, err := LoadScope(c.ctx, c.db, sc)
+	if err != nil {
+		return nil, err
+	}
+	c.byScope[sc] = d
+	return d, nil
+}
+
+// DefaultGroupIDs are the groups every experiment of a business shows: the
+// default groups of its platform and of the business itself.
+func DefaultGroupIDs(ctx context.Context, db *sql.DB, businessID int64) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT g.id FROM metric_groups g
+		WHERE g.is_default AND (g.business_id = $1 OR g.platform_id = (SELECT platform_id FROM businesses WHERE id = $1))
+		ORDER BY g.platform_id NULLS LAST, g.id`, businessID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func loadGroups(ctx context.Context, db *sql.DB, ids []int64) ([]Group, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT g.id, g.name, g.is_default, array_to_string(g.metric_ids, ','),
+		       COALESCE(b.name, p.name || ' (platform)')
+		FROM metric_groups g LEFT JOIN businesses b ON b.id = g.business_id LEFT JOIN platforms p ON p.id = g.platform_id
+		WHERE g.id = ANY($1::bigint[])`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	by := map[int64]Group{}
+	for rows.Next() {
+		var g Group
 		var raw string
-		if err := db.QueryRowContext(ctx, `SELECT array_to_string(metric_ids, ',') FROM metric_groups WHERE id = $1`, e.metricGroupID.Int64).Scan(&raw); err == nil && raw != "" {
-			for _, s := range strings.Split(raw, ",") {
-				var id int64
-				fmt.Sscan(s, &id)
-				ids = append(ids, id)
+		if err := rows.Scan(&g.ID, &g.Name, &g.IsDefault, &raw, &g.Owner); err != nil {
+			return nil, err
+		}
+		g.MetricIDs = parseIDs(raw)
+		by[g.ID] = g
+	}
+	var out []Group
+	for _, id := range ids {
+		if g, ok := by[id]; ok {
+			out = append(out, g)
+		}
+	}
+	return out, rows.Err()
+}
+
+func loadMetricDefs(ctx context.Context, db *sql.DB, ids []int64) (map[int64]MetricDef, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, COALESCE(business_id, 0), COALESCE(platform_id, 0), key, name, description, formula, format, decimals, direction
+		FROM metrics WHERE id = ANY($1::bigint[])`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]MetricDef{}
+	for rows.Next() {
+		var m MetricDef
+		if err := rows.Scan(&m.ID, &m.BusinessID, &m.PlatformID, &m.Key, &m.Name, &m.Description, &m.Formula, &m.Format, &m.Decimals, &m.Direction); err != nil {
+			return nil, err
+		}
+		out[m.ID] = m
+	}
+	return out, rows.Err()
+}
+
+// selectMetrics resolves which groups and metrics a report shows.
+func selectMetrics(ctx context.Context, db *sql.DB, e *experimentInfo, o Options) ([]Group, []MetricDef, error) {
+	var groups []Group
+	switch {
+	case len(o.MetricIDs) > 0:
+		groups = []Group{{Name: "Selected metrics", MetricIDs: o.MetricIDs}}
+	default:
+		ids := o.GroupIDs
+		if len(ids) == 0 {
+			defaults, err := DefaultGroupIDs(ctx, db, e.businessID)
+			if err != nil {
+				return nil, nil, err
+			}
+			seen := map[int64]bool{}
+			for _, id := range append(defaults, e.groupIDs...) {
+				if !seen[id] {
+					seen[id] = true
+					ids = append(ids, id)
+				}
+			}
+		}
+		var err error
+		if groups, err = loadGroups(ctx, db, ids); err != nil {
+			return nil, nil, err
+		}
+	}
+	if len(groups) == 0 {
+		defs, err := Load(ctx, db, e.businessID)
+		if err != nil {
+			return nil, nil, err
+		}
+		groups = []Group{{Name: "All metrics", MetricIDs: defs.Order}}
+	}
+	var all []int64
+	seen := map[int64]bool{}
+	for _, g := range groups {
+		for _, id := range g.MetricIDs {
+			if !seen[id] {
+				seen[id] = true
+				all = append(all, id)
 			}
 		}
 	}
-	if len(ids) == 0 {
-		ids = defs.Order
+	defs, err := loadMetricDefs(ctx, db, all)
+	if err != nil {
+		return nil, nil, err
 	}
 	var out []MetricDef
-	for _, id := range ids {
-		if m, ok := defs.MetricByID[id]; ok {
+	for _, id := range all {
+		if m, ok := defs[id]; ok {
 			out = append(out, m)
 		}
 	}
-	return out, nil
+	return groups, out, nil
 }
 
 type compiled struct {
@@ -209,17 +360,14 @@ func Compute(ctx context.Context, db *sql.DB, expID int64, o Options) (*Report, 
 		o.Alpha = 0.05
 	}
 	from, to := e.window(o)
-	defs, err := Load(ctx, db, e.businessID)
+	groups, metrics, err := selectMetrics(ctx, db, e, o)
 	if err != nil {
 		return nil, err
 	}
-	metrics, err := selectMetrics(ctx, db, defs, e, o.MetricIDs)
-	if err != nil {
-		return nil, err
-	}
-	comps, measureIDs, index := compileAll(defs, metrics)
+	cat := newCatalog(ctx, db)
+	comps, measureIDs, index := compileAll(cat, metrics)
 
-	cells, err := moments(ctx, db, expID, from, to, measureIDs, defs, o.Dimension)
+	cells, err := moments(ctx, db, expID, from, to, measureIDs, cat.measures, o.Dimension)
 	if err != nil {
 		return nil, err
 	}
@@ -227,10 +375,7 @@ func Compute(ctx context.Context, db *sql.DB, expID int64, o Options) (*Report, 
 	r := &Report{
 		ExperimentID: expID, From: from.Format("2006-01-02"), To: to.Format("2006-01-02"),
 		Alpha: o.Alpha, Dimension: o.Dimension, Variants: e.variants, Segments: []Segment{},
-		ComputedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	if e.metricGroupID.Valid {
-		r.MetricGroupID = &e.metricGroupID.Int64
+		ComputedAt: time.Now().UTC().Format(time.RFC3339), Groups: groups,
 	}
 
 	// Whole-population totals per variant (and SRM) come from summing segments.
@@ -290,24 +435,40 @@ func Compute(ctx context.Context, db *sql.DB, expID int64, o Options) (*Report, 
 	return r, nil
 }
 
-// compileAll expands every metric and assigns each used measure a column.
-// `users` takes the last column.
-func compileAll(defs *Definitions, metrics []MetricDef) ([]compiled, []int64, map[string]int) {
+// compileAll expands every metric in its own scope (so a group can mix
+// businesses) and gives each measure used a column. Measures are renamed
+// m_<id> internally, because two businesses may use the same key. `users`
+// takes the last column.
+func compileAll(cat *catalog, metrics []MetricDef) ([]compiled, []int64, map[string]int) {
 	var comps []compiled
 	index := map[string]int{}
 	var measureIDs []int64
 	for _, m := range metrics {
 		c := compiled{def: m}
-		c.node, c.err = defs.Expand(m.Formula, m.Key)
+		defs, err := cat.defs(m.ScopeOf())
+		if err != nil {
+			c.err = err
+			comps = append(comps, c)
+			continue
+		}
+		var node formula.Node
+		node, c.err = defs.Expand(m.Formula, m.Key)
 		if c.err == nil {
-			c.expanded = formula.String(c.node)
-			c.kind = formula.Classify(c.node)
-			for _, k := range MeasureKeys(c.node) {
-				if _, ok := index[k]; !ok {
-					index[k] = len(measureIDs)
-					measureIDs = append(measureIDs, defs.Measures[k].ID)
+			c.expanded = formula.String(node)
+			c.kind = formula.Classify(node)
+			c.node = formula.Substitute(node, func(name string) (formula.Node, bool) {
+				ms, ok := defs.Measures[name]
+				if !ok {
+					return nil, false
 				}
-			}
+				ident := fmt.Sprintf("m_%d", ms.ID)
+				if _, seen := index[ident]; !seen {
+					index[ident] = len(measureIDs)
+					measureIDs = append(measureIDs, ms.ID)
+					cat.measures[ms.ID] = ms
+				}
+				return formula.Ident{Name: ident}, true
+			})
 		}
 		comps = append(comps, c)
 	}
@@ -418,7 +579,7 @@ func withUsers(m stats.Moments, k int) stats.Moments {
 // moments computes, per variant (and dimension value), the unit count and
 // the sums and cross sums of every measure over each unit's post-exposure
 // window — one pass in SQL, no per-unit data leaves the database.
-func moments(ctx context.Context, db *sql.DB, expID int64, from, to time.Time, measureIDs []int64, defs *Definitions, dimension string) ([]cell, error) {
+func moments(ctx context.Context, db *sql.DB, expID int64, from, to time.Time, measureIDs []int64, measures map[int64]pipeline.Measure, dimension string) ([]cell, error) {
 	k := len(measureIDs)
 	args := []any{expID, from, to}
 	seg := "''"
@@ -435,7 +596,7 @@ func moments(ctx context.Context, db *sql.DB, expID int64, from, to time.Time, m
 		args = append(args, measureIDs)
 		q.WriteString(`, m AS (SELECT u.unit_id, u.variant_id, u.seg`)
 		for i, id := range measureIDs {
-			agg := pipeline.WindowAgg(defs.MeasureByID[id].Aggregation)
+			agg := pipeline.WindowAgg(measures[id].Aggregation)
 			fmt.Fprintf(&q, `, COALESCE(%s(d.value) FILTER (WHERE d.measure_id = %d), 0) AS m%d`, agg, id, i)
 		}
 		fmt.Fprintf(&q, ` FROM u LEFT JOIN unit_measure_daily d
@@ -537,15 +698,16 @@ func Trend(ctx context.Context, db *sql.DB, expID, metricID int64, o Options) ([
 	if days := int(to.Sub(from).Hours()/24) + 1; days > MaxTrendDays {
 		from = to.AddDate(0, 0, -(MaxTrendDays - 1))
 	}
-	defs, err := Load(ctx, db, e.businessID)
+	found, err := loadMetricDefs(ctx, db, []int64{metricID})
 	if err != nil {
 		return nil, err
 	}
-	m, ok := defs.MetricByID[metricID]
+	m, ok := found[metricID]
 	if !ok {
-		return nil, fmt.Errorf("metric %d is not part of this experiment's business", metricID)
+		return nil, fmt.Errorf("metric %d doesn't exist", metricID)
 	}
-	comps, measureIDs, index := compileAll(defs, []MetricDef{m})
+	cat := newCatalog(ctx, db)
+	comps, measureIDs, index := compileAll(cat, []MetricDef{m})
 	if comps[0].err != nil {
 		return nil, comps[0].err
 	}
@@ -564,7 +726,7 @@ func Trend(ctx context.Context, db *sql.DB, expID, metricID int64, o Options) ([
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			cells, err := moments(ctx, db, expID, from, d, measureIDs, defs, "")
+			cells, err := moments(ctx, db, expID, from, d, measureIDs, cat.measures, "")
 			if err != nil {
 				errs[i] = err
 				return
@@ -596,8 +758,8 @@ func Preview(ctx context.Context, db *sql.DB, defs *Definitions, src string, fro
 	vars := map[string]float64{}
 	var users int64
 	if err := db.QueryRowContext(ctx, `
-		SELECT count(DISTINCT unit_id) FROM unit_measure_daily d JOIN measures m ON m.id = d.measure_id AND d.unit_type = 'user_id'
-		WHERE m.business_id = $1 AND d.day BETWEEN $2 AND $3`, defs.BusinessID, from, to).Scan(&users); err != nil {
+		SELECT count(DISTINCT unit_id) FROM unit_measure_daily
+		WHERE measure_id = ANY($1::bigint[]) AND unit_type = 'user_id' AND day BETWEEN $2 AND $3`, measureIDsOf(defs), from, to).Scan(&users); err != nil {
 		return nil, err
 	}
 	vars[UsersIdent] = float64(users)
@@ -621,4 +783,12 @@ func Preview(ctx context.Context, db *sql.DB, defs *Definitions, src string, fro
 		"from":     from.Format("2006-01-02"),
 		"to":       to.Format("2006-01-02"),
 	}, nil
+}
+
+func measureIDsOf(d *Definitions) []int64 {
+	out := []int64{}
+	for id := range d.MeasureByID {
+		out = append(out, id)
+	}
+	return out
 }

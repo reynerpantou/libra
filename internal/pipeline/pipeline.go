@@ -155,8 +155,9 @@ func rollupExposures(ctx context.Context, db *sql.DB, wm int64, cutoff time.Time
 
 type storedMeasure struct {
 	Measure
-	backfill  bool
-	updatedAt time.Time
+	businesses []int64 // whose events count: the business, or all of the platform's
+	backfill   bool
+	updatedAt  time.Time
 }
 
 func rollupEvents(ctx context.Context, db *sql.DB, wm int64, cutoff time.Time, st *Stats) error {
@@ -200,10 +201,14 @@ func rollupEvents(ctx context.Context, db *sql.DB, wm int64, cutoff time.Time, s
 	if err != nil {
 		return err
 	}
+	diversions, err := loadDiversions(ctx, db)
+	if err != nil {
+		return err
+	}
 	for _, m := range measures {
 		switch {
 		case m.backfill:
-			n, err := recompute(ctx, db, m.Measure, nil, top)
+			n, err := recompute(ctx, db, m, diversions, nil, top)
 			if err != nil {
 				return fmt.Errorf("backfill %s: %w", m.Key, err)
 			}
@@ -214,8 +219,8 @@ func rollupEvents(ctx context.Context, db *sql.DB, wm int64, cutoff time.Time, s
 				`UPDATE measures SET needs_backfill = false WHERE id = $1 AND updated_at = $2`, m.ID, m.updatedAt); err != nil {
 				return err
 			}
-		case len(touched[m.BusinessID]) > 0:
-			n, err := recompute(ctx, db, m.Measure, touched[m.BusinessID], top)
+		case len(daysFor(touched, m.businesses)) > 0:
+			n, err := recompute(ctx, db, m, diversions, daysFor(touched, m.businesses), top)
 			if err != nil {
 				return fmt.Errorf("measure %s: %w", m.Key, err)
 			}
@@ -231,8 +236,11 @@ func rollupEvents(ctx context.Context, db *sql.DB, wm int64, cutoff time.Time, s
 
 func loadMeasures(ctx context.Context, db *sql.DB) ([]storedMeasure, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, business_id, key, name, event_name, aggregation, value_field, filters, needs_backfill, updated_at
-		FROM measures ORDER BY id`)
+		SELECT m.id, COALESCE(m.business_id, 0), COALESCE(m.platform_id, 0), m.key, m.name, m.event_name, m.aggregation, m.value_field,
+		       m.filters, m.needs_backfill, m.updated_at,
+		       CASE WHEN m.business_id IS NOT NULL THEN m.business_id::text
+		            ELSE COALESCE((SELECT string_agg(b.id::text, ',') FROM businesses b WHERE b.platform_id = m.platform_id), '') END
+		FROM measures m ORDER BY m.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -241,8 +249,15 @@ func loadMeasures(ctx context.Context, db *sql.DB) ([]storedMeasure, error) {
 	for rows.Next() {
 		var m storedMeasure
 		var filters []byte
-		if err := rows.Scan(&m.ID, &m.BusinessID, &m.Key, &m.Name, &m.EventName, &m.Aggregation, &m.ValueField, &filters, &m.backfill, &m.updatedAt); err != nil {
+		var biz string
+		if err := rows.Scan(&m.ID, &m.BusinessID, &m.PlatformID, &m.Key, &m.Name, &m.EventName, &m.Aggregation, &m.ValueField, &filters, &m.backfill, &m.updatedAt, &biz); err != nil {
 			return nil, err
+		}
+		for _, part := range strings.Split(biz, ",") {
+			var id int64
+			if _, err := fmt.Sscan(part, &id); err == nil {
+				m.businesses = append(m.businesses, id)
+			}
 		}
 		if err := json.Unmarshal(filters, &m.Filters); err != nil {
 			return nil, fmt.Errorf("measure %s filters: %w", m.Key, err)
@@ -254,7 +269,46 @@ func loadMeasures(ctx context.Context, db *sql.DB) ([]storedMeasure, error) {
 
 // recompute rebuilds a measure's daily rows for the given days (all days when
 // days is nil) from events up to id maxID, atomically.
-func recompute(ctx context.Context, db *sql.DB, m Measure, days []time.Time, maxID int64) (int64, error) {
+// daysFor merges the touched days of several businesses.
+func daysFor(touched map[int64][]time.Time, businesses []int64) []time.Time {
+	seen := map[time.Time]bool{}
+	var out []time.Time
+	for _, b := range businesses {
+		for _, d := range touched[b] {
+			if !seen[d] {
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+// loadDiversions lists the ids measures are computed per: user and device
+// always, plus any other diversion a layer splits by.
+func loadDiversions(ctx context.Context, db *sql.DB) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT key FROM diversions WHERE key IN ('user_id', 'device_id') OR key IN (SELECT diversion FROM layers) ORDER BY key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func recompute(ctx context.Context, db *sql.DB, sm storedMeasure, diversions []string, days []time.Time, maxID int64) (int64, error) {
+	m := sm.Measure
+	if len(sm.businesses) == 0 {
+		return 0, nil // a platform with no businesses yet
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -265,7 +319,7 @@ func recompute(ctx context.Context, db *sql.DB, m Measure, days []time.Time, max
 	mid := args.add(m.ID)
 	agg, conds := m.compile(args)
 	where := []string{
-		"business_id = " + args.add(m.BusinessID),
+		"business_id = ANY(" + args.add(sm.businesses) + "::bigint[])",
 		"event_name = " + args.add(m.EventName),
 		"id <= " + args.add(maxID),
 	}
@@ -298,17 +352,25 @@ func recompute(ctx context.Context, db *sql.DB, m Measure, days []time.Time, max
 		return 0, err
 	}
 	where = append(where, conds...)
-	q := fmt.Sprintf(`
-		INSERT INTO unit_measure_daily (measure_id, day, unit_type, unit_id, value)
-		SELECT %[1]s::bigint, (ts AT TIME ZONE 'UTC')::date AS day, 'user_id', unit_id, %[2]s
-		FROM events WHERE %[3]s AND unit_id <> ''
+	// One block per diversion: the same events, grouped by that id.
+	var parts []string
+	for _, d := range diversions {
+		var unit string
+		switch d {
+		case "user_id":
+			unit = "NULLIF(unit_id, '')"
+		case "device_id":
+			unit = "NULLIF(device_id, '')"
+		default:
+			unit = "(ids->>" + args.add(d) + "::text)"
+		}
+		parts = append(parts, fmt.Sprintf(`
+		SELECT %[1]s::bigint, (ts AT TIME ZONE 'UTC')::date AS day, %[4]s::text, %[5]s, %[2]s
+		FROM events WHERE %[3]s AND %[5]s IS NOT NULL
 		GROUP BY 2, 4
-		HAVING %[2]s IS NOT NULL
-		UNION ALL
-		SELECT %[1]s::bigint, (ts AT TIME ZONE 'UTC')::date AS day, 'device_id', device_id, %[2]s
-		FROM events WHERE %[3]s AND device_id IS NOT NULL AND device_id <> ''
-		GROUP BY 2, 4
-		HAVING %[2]s IS NOT NULL`, mid, agg, strings.Join(where, " AND "))
+		HAVING %[2]s IS NOT NULL`, mid, agg, strings.Join(where, " AND "), args.add(d), unit))
+	}
+	q := `INSERT INTO unit_measure_daily (measure_id, day, unit_type, unit_id, value)` + strings.Join(parts, "\n\t\tUNION ALL")
 	res, err := tx.ExecContext(ctx, q, args.list...)
 	if err != nil {
 		return 0, err
