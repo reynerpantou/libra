@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { GroupPicker } from "../components/GroupPicker";
-import { JsonEditor } from "../components/JsonEditor";
+import { JsonEditor, NamespacedJson } from "../components/JsonEditor";
 import { ErrorBox, Field, Icon, Loading, Segmented, TrafficBar } from "../components/ui";
 import { diversionName, useDiversions } from "../lib/diversions";
 import { api, type ExperimentInput } from "../lib/api";
@@ -70,7 +70,7 @@ export default function ExperimentForm() {
     setTargeting(e.targeting);
     setGroupIds(e.metric_group_ids ?? []);
     setVariants(
-      (e.variants ?? []).map((v) => ({ ...v, paramsText: JSON.stringify(v.params ?? {}, null, 2) }))
+      (e.variants ?? []).map((v) => ({ ...v, paramsText: JSON.stringify(unwrap(v.params ?? {}, e.platform_key), null, 2) }))
     );
   }, [existing.data]);
 
@@ -86,6 +86,7 @@ export default function ExperimentForm() {
   const layer = refs.data?.layers.find((l) => l.id === layerId);
   const layerFree = mode === "auto" ? 1000 : layer ? 1000 - layer.used_buckets + (existing.data?.layer_id === layerId ? existing.data.traffic_held : 0) : 1000;
   const business = refs.data?.businesses.find((b) => b.id === businessId);
+  const platformKey = business?.platform_key ?? existing.data?.platform_key ?? "";
   // Don't let a draft plan more traffic than its layer has free.
   useEffect(() => {
     if (!locked && traffic > layerFree) setTraffic(layerFree);
@@ -127,7 +128,8 @@ export default function ExperimentForm() {
       traffic_target: traffic,
       targeting,
       metric_group_ids: groupIds,
-      variants: variants.map(({ paramsText, ...v }) => ({ ...v, weight: Number(v.weight), params: JSON.parse(paramsText || "{}") })),
+      // Parameters are namespaced by the platform key.
+      variants: variants.map(({ paramsText, ...v }) => ({ ...v, weight: Number(v.weight), params: { [platformKey]: JSON.parse(paramsText || "{}") } })),
     };
     setSaving(true);
     try {
@@ -388,12 +390,14 @@ export default function ExperimentForm() {
                   label="Parameters (JSON)"
                   hint={paramErrors[i] ? <span style={{ color: "var(--bad)" }}>{paramErrors[i]}</span> : "Tab / Shift+Tab indent. Esc, then Tab, moves to the next field."}
                 >
+                  <NamespacedJson platformKey={platformKey} platformName={business?.platform_name ?? ""}>
                   <JsonEditor
                     disabled={locked}
                     invalid={!!paramErrors[i]}
                     value={v.paramsText}
                     onChange={(t) => setVariants(variants.map((x, j) => (j === i ? { ...x, paramsText: t } : x)))}
                   />
+                  </NamespacedJson>
                 </Field>
               </div>
             </div>
@@ -412,4 +416,11 @@ export default function ExperimentForm() {
       </div>
     </div>
   );
+}
+
+// unwrap shows the part of a variant's params inside its platform key.
+function unwrap(params: Record<string, unknown>, platformKey: string): Record<string, unknown> {
+  const inner = params[platformKey];
+  if (Object.keys(params).length === 1 && inner && typeof inner === "object" && !Array.isArray(inner)) return inner as Record<string, unknown>;
+  return params;
 }

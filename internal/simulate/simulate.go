@@ -388,7 +388,7 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 			}
 		}
 		for pos, v := range e.variants {
-			params, _ := json.Marshal(v.params)
+			params, _ := json.Marshal(map[string]any{demoPlatform.key: v.params}) // namespaced by platform
 			var vid int64
 			if err := tx.QueryRowContext(ctx, `INSERT INTO variants (experiment_id, key, name, is_control, weight, params, position) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
 				id, v.key, v.name, v.control, v.weight, params, pos).Scan(&vid); err != nil {
@@ -582,7 +582,8 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 				business = "" // search and reco experiments
 			}
 			res := snap.Resolve(assign.Request{UserID: u.id, DeviceID: u.device, Platform: o.Platform, Business: business, Attrs: u.attrs}, false)
-			fx := effects(res.Params, u.attrs)
+			ours, _ := res.Params[o.Platform].(map[string]any) // this platform's namespace
+			fx := effects(ours, u.attrs)
 			for _, h := range res.Hits {
 				key := fmt.Sprintf("%d:%s", h.ExperimentID, h.UnitID)
 				if h.Source == assign.SourceTraffic && !exposed[key] {

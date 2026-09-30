@@ -15,6 +15,7 @@ export interface Business {
   id: number;
   platform_id: number;
   platform_name: string;
+  platform_key: string;
   key: string;
   name: string;
   description: string;

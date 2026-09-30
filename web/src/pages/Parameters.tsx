@@ -47,6 +47,39 @@ const show = (v: unknown) => JSON.stringify(v);
 export default function Parameters() {
   const [params, setParams] = useSearchParams();
   const source = (params.get("view") as "live" | "launched") || "live";
+  const platforms = useAsync(() => api.platforms(), []);
+  const list = platforms.data ?? [];
+  // One platform: nothing to choose. Several: pick one (or all).
+  const platform = params.get("platform") ?? (list.length === 1 ? list[0].key : "");
+  const business = params.get("business") ?? "";
+  const set = (k: string, v: string) => {
+    const next = new URLSearchParams(params);
+    if (v) next.set(k, v);
+    else next.delete(k);
+    if (k === "platform") next.delete("business");
+    setParams(next, { replace: true });
+  };
+  const plat = list.find((p) => p.key === platform);
+  const picker = (
+    <div className="row" style={{ gap: 8 }}>
+      <select className="input" style={{ width: 190 }} value={platform} onChange={(e) => set("platform", e.target.value)} aria-label="Platform">
+        <option value="">All platforms</option>
+        {list.map((p) => (
+          <option key={p.id} value={p.key}>
+            {p.name} ({p.key})
+          </option>
+        ))}
+      </select>
+      <select className="input" style={{ width: 190 }} value={business} onChange={(e) => set("business", e.target.value)} disabled={!plat} aria-label="Business">
+        <option value="">All businesses</option>
+        {plat?.businesses.map((b) => (
+          <option key={b.id} value={b.key}>
+            {b.name} ({b.key})
+          </option>
+        ))}
+      </select>
+    </div>
+  );
   return (
     <div className="page">
       <div className="page-head">
@@ -64,32 +97,35 @@ export default function Parameters() {
             ["launched", "Launched config"],
           ]}
           value={source}
-          onChange={(v) => setParams({ view: v }, { replace: true })}
+          onChange={(v) => set("view", v)}
         />
       </div>
-      {source === "live" ? <Live /> : <Launched />}
+      {source === "live" ? (
+        <Live platform={platform} business={business} picker={picker} />
+      ) : (
+        <Launched platform={platform} business={business} picker={picker} />
+      )}
     </div>
   );
 }
 
-function Live() {
+function Live({ platform, business, picker }: { platform: string; business: string; picker: ReactNode }) {
   const list = useAsync(() => api.parameters(), []);
   const [view, setView] = useState<View>("tree");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [q, setQ] = useState("");
-  const [business, setBusiness] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
   const all = list.data ?? [];
-  const businesses = useMemo(() => Array.from(new Set(all.map((v) => `${v.platform}/${v.business}`))).sort(), [all]);
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     return all.filter(
       (v) =>
         (status === "all" || v.status === status) &&
-        (!business || `${v.platform}/${v.business}` === business) &&
+        (!platform || v.platform === platform) &&
+        (!business || v.business === business) &&
         (!s || v.path.toLowerCase().includes(s) || v.experiment.toLowerCase().includes(s) || show(v.value).toLowerCase().includes(s))
     );
-  }, [all, q, status, business]);
+  }, [all, q, status, platform, business]);
   const tree = useMemo(() => buildTree(filtered), [filtered]);
   const byPath = useMemo(() => {
     const m = new Map<string, ParamValue[]>();
@@ -121,14 +157,7 @@ function Live() {
       <div className="card card-pad">
         <div className="row" style={{ gap: 10 }}>
           <input className="input" style={{ flex: 1, minWidth: 220 }} placeholder="Search a field, value or experiment…" value={q} onChange={(e) => setQ(e.target.value)} />
-          <select className="input" style={{ width: 180 }} value={business} onChange={(e) => setBusiness(e.target.value)}>
-            <option value="">All businesses</option>
-            {businesses.map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
+          {picker}
           <Segmented<StatusFilter>
             options={[
               ["all", "All"],
@@ -329,13 +358,13 @@ function launchedTree(fields: LaunchedField[]): LNode {
   return root;
 }
 
-function Launched() {
+function Launched({ platform, business, picker }: { platform: string; business: string; picker: ReactNode }) {
   const data = useAsync(() => api.launchedConfig(), []);
-  const [biz, setBiz] = useState("");
   const [view, setView] = useState<"json" | "fields">("json");
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<{ f: LaunchedField; anchor: HTMLElement } | null>(null);
-  const bs = data.data?.businesses ?? [];
+  const bs = (data.data?.businesses ?? []).filter((b) => (!platform || b.platform === platform) && (!business || b.business === business));
+  const [biz, setBiz] = useState("");
   const cur = bs.find((b) => b.key === biz) ?? bs[0];
   const query = q.trim().toLowerCase();
   const fields = (cur?.fields ?? []).filter(
@@ -389,38 +418,43 @@ function Launched() {
   return (
     <div className="stack">
       <ErrorBox error={data.error} />
+      <div className="card card-pad">
+        <div className="row" style={{ gap: 10 }}>
+          {picker}
+          {bs.length > 1 && (
+            <select className="input" style={{ width: 240 }} value={cur?.key} onChange={(e) => setBiz(e.target.value)} aria-label="Launched config of">
+              {bs.map((b) => (
+                <option key={b.key} value={b.key}>
+                  {b.name} ({b.fields.length} fields)
+                </option>
+              ))}
+            </select>
+          )}
+          <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="Search a field, value or experiment…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <Segmented<"json" | "fields">
+            options={[
+              ["json", "JSON"],
+              ["fields", "Fields"],
+            ]}
+            value={view}
+            onChange={setView}
+          />
+        </div>
+        {cur && (
+            <p className="small faint" style={{ marginTop: 8 }}>
+              The default config of <b>{cur?.name}</b>: launched variants merged in launch order (a later launch replaces the same field). Running
+              experiments can still override it for their units. Fields marked with a share are still rolling out.
+            </p>
+        )}
+      </div>
       {bs.length === 0 ? (
         <div className="card">
-          <Empty title="Nothing launched yet">
+          <Empty title={platform ? "Nothing launched here yet" : "Nothing launched yet"}>
             <p>When an experiment is launched, its winning variant's parameters become the default here.</p>
           </Empty>
         </div>
       ) : (
         <>
-          <div className="card card-pad">
-            <div className="row" style={{ gap: 10 }}>
-              <select className="input" style={{ width: 240 }} value={cur?.key} onChange={(e) => setBiz(e.target.value)}>
-                {bs.map((b) => (
-                  <option key={b.key} value={b.key}>
-                    {b.name} ({b.fields.length} fields)
-                  </option>
-                ))}
-              </select>
-              <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="Search a field, value or experiment…" value={q} onChange={(e) => setQ(e.target.value)} />
-              <Segmented<"json" | "fields">
-                options={[
-                  ["json", "JSON"],
-                  ["fields", "Fields"],
-                ]}
-                value={view}
-                onChange={setView}
-              />
-            </div>
-            <p className="small faint" style={{ marginTop: 8 }}>
-              The default config of <b>{cur?.name}</b>: launched variants merged in launch order (a later launch replaces the same field). Running
-              experiments can still override it for their units. Fields marked with a share are still rolling out.
-            </p>
-          </div>
           {view === "json" ? (
             <section className="card card-pad">
               <pre className="ptree">{renderNode(launchedTree(fields), 0)}</pre>

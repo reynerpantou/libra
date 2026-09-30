@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent } from "react";
+import { useRef, type KeyboardEvent, type ReactNode } from "react";
 
 const INDENT = "  ";
 
@@ -118,5 +118,20 @@ export function JsonEditor({
       onKeyDown={onKeyDown}
       title="Tab / Shift+Tab indent · Esc then Tab to leave the editor"
     />
+  );
+}
+
+// NamespacedJson frames an editor with the fixed platform wrapper: what's
+// typed goes inside {"<platform key>": …}, so platforms never collide.
+export function NamespacedJson({ platformKey, platformName, children }: { platformKey: string; platformName: string; children: ReactNode }) {
+  return (
+    <div className="json-ns">
+      <div className="json-ns-line" title={`Parameters are namespaced by the platform key of ${platformName || "the business's platform"}`}>
+        {"{ "}
+        <span className="json-ns-key">"{platformKey || "…"}"</span>: <span className="faint">— {platformName || "platform"}, fixed</span>
+      </div>
+      <div className="json-ns-body">{children}</div>
+      <div className="json-ns-line">{"}"}</div>
+    </div>
   );
 }

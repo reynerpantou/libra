@@ -17,6 +17,7 @@ type Business struct {
 	ID            int64     `json:"id"`
 	PlatformID    int64     `json:"platform_id"`
 	PlatformName  string    `json:"platform_name"`
+	PlatformKey   string    `json:"platform_key"` // variant params are namespaced by it
 	Key           string    `json:"key"`
 	Name          string    `json:"name"`
 	Description   string    `json:"description"`
@@ -31,7 +32,7 @@ var businessKey = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 
 func (s *Server) ListBusinesses(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.DB.QueryContext(r.Context(), `
-		SELECT b.id, b.platform_id, p.name, b.key, b.name, b.description, b.require_review, b.created_at,
+		SELECT b.id, b.platform_id, p.name, p.key, b.key, b.name, b.description, b.require_review, b.created_at,
 		       (SELECT count(*) FROM measures WHERE business_id = b.id),
 		       (SELECT count(*) FROM metrics WHERE business_id = b.id),
 		       (SELECT count(*) FROM experiments WHERE business_id = b.id AND status <> 'archived')
@@ -44,7 +45,7 @@ func (s *Server) ListBusinesses(w http.ResponseWriter, r *http.Request) {
 	out := []Business{}
 	for rows.Next() {
 		var b Business
-		if err := rows.Scan(&b.ID, &b.PlatformID, &b.PlatformName, &b.Key, &b.Name, &b.Description, &b.RequireReview, &b.CreatedAt, &b.Measures, &b.Metrics, &b.Experiments); err != nil {
+		if err := rows.Scan(&b.ID, &b.PlatformID, &b.PlatformName, &b.PlatformKey, &b.Key, &b.Name, &b.Description, &b.RequireReview, &b.CreatedAt, &b.Measures, &b.Metrics, &b.Experiments); err != nil {
 			serverError(w, r, err)
 			return
 		}
@@ -56,9 +57,9 @@ func (s *Server) ListBusinesses(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loadBusiness(r *http.Request, id int64) (Business, error) {
 	var b Business
 	err := s.DB.QueryRowContext(r.Context(), `
-		SELECT b.id, b.platform_id, p.name, b.key, b.name, b.description, b.require_review, b.created_at
+		SELECT b.id, b.platform_id, p.name, p.key, b.key, b.name, b.description, b.require_review, b.created_at
 		FROM businesses b JOIN platforms p ON p.id = b.platform_id WHERE b.id = $1`, id).
-		Scan(&b.ID, &b.PlatformID, &b.PlatformName, &b.Key, &b.Name, &b.Description, &b.RequireReview, &b.CreatedAt)
+		Scan(&b.ID, &b.PlatformID, &b.PlatformName, &b.PlatformKey, &b.Key, &b.Name, &b.Description, &b.RequireReview, &b.CreatedAt)
 	return b, err
 }
 
@@ -145,14 +146,41 @@ func (s *Server) UpdateBusiness(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	res, err := s.DB.ExecContext(r.Context(), `UPDATE businesses SET name = $2, description = $3, require_review = $4, platform_id = COALESCE(NULLIF($5, 0), platform_id) WHERE id = $1`,
-		id, name, strings.TrimSpace(req.Description), req.RequireReview, req.PlatformID)
+	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	defer tx.Rollback()
+	var oldKey string
+	if err := tx.QueryRowContext(r.Context(), `SELECT p.key FROM businesses b JOIN platforms p ON p.id = b.platform_id WHERE b.id = $1`, id).Scan(&oldKey); err != nil {
 		notFound(w, "business")
+		return
+	}
+	_, err = tx.ExecContext(r.Context(), `UPDATE businesses SET name = $2, description = $3, require_review = $4, platform_id = COALESCE(NULLIF($5, 0), platform_id) WHERE id = $1`,
+		id, name, strings.TrimSpace(req.Description), req.RequireReview, req.PlatformID)
+	if isUniqueViolation(err) {
+		writeError(w, http.StatusConflict, "conflict", "that platform already has a business with this key")
+		return
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	// Moved: its experiments' parameters move under the new platform key.
+	var newKey string
+	if err := tx.QueryRowContext(r.Context(), `SELECT p.key FROM businesses b JOIN platforms p ON p.id = b.platform_id WHERE b.id = $1`, id).Scan(&newKey); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if newKey != oldKey {
+		if err := rewrapParams(r.Context(), tx, `b.id = $3`, oldKey, newKey, id); err != nil {
+			serverError(w, r, err)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		serverError(w, r, err)
 		return
 	}
 	_ = audit(r.Context(), s.DB, user(r).ID, 0, "business", id, "update", "", "", req)

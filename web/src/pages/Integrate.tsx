@@ -60,6 +60,10 @@ export default function Integrate() {
               <b>events</b>: <code>business</code> is required; add <code>platform</code> when the business key exists on more than one platform.
             </li>
             <li>A request with an unknown or ambiguous key is rejected with a message saying which.</li>
+            <li>
+              <b>params</b> are namespaced by the platform key: everything a {plat?.name ?? "platform"} experiment serves is under{" "}
+              <code>{`"${P}": {...}`}</code>, so platforms never overwrite each other's fields.
+            </li>
           </ul>
           {list.length > 0 && (
             <details>
@@ -99,7 +103,7 @@ export default function Integrate() {
        "attrs": {"region": "ID", "os": "android", "app_version": "10.3.0"}}'
 
 {
-  "params": {"search": {"ranking": {"formula": "ctr * cvr * price_score", "price_boost": 0.3}}},
+  "params": {"${P}": {"search": {"ranking": {"formula": "ctr * cvr * price_score", "price_boost": 0.3}}}},
   "hits": [{"experiment_id": 1, "experiment": "Ranking formula v2", "variant_id": 2,
             "variant": "treatment", "source": "experiment", "unit_type": "user_id"}],
   "platform": "${P}", "business": "${B}",
@@ -186,7 +190,7 @@ export default function Integrate() {
 c := client.New("${origin}", os.Getenv("LIBRA_KEY"))
 res, err := c.Resolve(ctx, client.ResolveRequest{Platform: "${P}", Business: "${B}", UserID: "user-42", DeviceID: "dev-9f3a",
     Attrs: map[string]any{"region": "ID"}})
-formula := res.String("search.ranking.formula", "ctr * cvr")
+formula := res.String("${P}.search.ranking.formula", "ctr * cvr")
 
 c.Track(client.Event{Platform: "${P}", Business: "${B}", Event: "order", UserID: "user-42", DeviceID: "dev-9f3a", Value: 35.9,
     Props: map[string]any{"source": "search"}})   // batched in the background
