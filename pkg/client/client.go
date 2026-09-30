@@ -4,9 +4,9 @@
 //
 //	c := client.New("https://example.com/libra", os.Getenv("LIBRA_KEY"))
 //	defer c.Close()
-//	res, err := c.Resolve(ctx, client.ResolveRequest{UserID: "user-42", DeviceID: "dev-9f3a", Business: "search"})
+//	res, err := c.Resolve(ctx, client.ResolveRequest{UserID: "user-42", DeviceID: "dev-9f3a", Platform: "shop", Business: "search"})
 //	formula := res.String("search.ranking.formula", "ctr * cvr")
-//	c.Track(client.Event{Business: "search", Event: "order", UserID: "user-42", Value: 35.9})
+//	c.Track(client.Event{Platform: "shop", Business: "search", Event: "order", UserID: "user-42", Value: 35.9})
 package client
 
 import (
@@ -59,6 +59,7 @@ func New(baseURL, apiKey string) *Client {
 type ResolveRequest struct {
 	UserID      string         `json:"user_id,omitempty"`
 	DeviceID    string         `json:"device_id,omitempty"`
+	Platform    string         `json:"platform,omitempty"` // required when Libra has several platforms
 	Business    string         `json:"business,omitempty"`
 	Attrs       map[string]any `json:"attrs,omitempty"`
 	LogExposure *bool          `json:"log_exposure,omitempty"`
@@ -162,6 +163,7 @@ func (c *Client) LogExposures(ctx context.Context, xs []Exposure) error {
 }
 
 type Event struct {
+	Platform string         `json:"platform,omitempty"` // needed when the business key exists on several platforms
 	Business string         `json:"business"`
 	Event    string         `json:"event"`
 	UserID   string         `json:"user_id,omitempty"`

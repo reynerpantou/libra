@@ -171,6 +171,9 @@ type Experiment struct {
 	ID                int64            `json:"id"`
 	BusinessID        int64            `json:"business_id"`
 	BusinessKey       string           `json:"business_key"`
+	PlatformID        int64            `json:"platform_id"`
+	PlatformKey       string           `json:"platform_key"`
+	PlatformName      string           `json:"platform_name"`
 	BusinessName      string           `json:"business_name"`
 	LayerID           int64            `json:"layer_id"`
 	LayerName         string           `json:"layer_name"`
@@ -202,13 +205,14 @@ type Experiment struct {
 }
 
 const experimentSelect = `
-	SELECT e.id, e.business_id, b.key, b.name, e.layer_id, l.name, l.diversion, l.auto, e.name, e.hypothesis, e.description,
+	SELECT e.id, e.business_id, b.key, b.name, p.id, p.key, p.name, e.layer_id, l.name, l.diversion, l.auto, e.name, e.hypothesis, e.description,
 	       e.owner_id, COALESCE(NULLIF(o.display_name, ''), o.username, ''), e.status, e.traffic_target, cardinality(e.buckets),
 	       e.targeting, array_to_string(e.metric_group_ids, ','), e.review_note, COALESCE(NULLIF(rv.display_name, ''), rv.username, ''),
 	       e.launched_variant_id, e.launch_rollout, e.started_at, e.ended_at, e.launched_at, e.created_at, e.updated_at,
 	       (SELECT count(*) FROM assignments a WHERE a.experiment_id = e.id)
 	FROM experiments e
 	JOIN businesses b ON b.id = e.business_id
+	JOIN platforms p ON p.id = b.platform_id
 	JOIN layers l ON l.id = e.layer_id
 	LEFT JOIN users o ON o.id = e.owner_id
 	LEFT JOIN users rv ON rv.id = e.reviewer_id`
@@ -217,7 +221,7 @@ func scanExperiment(sc interface{ Scan(...any) error }) (Experiment, error) {
 	var e Experiment
 	var targeting []byte
 	var groups string
-	err := sc.Scan(&e.ID, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.LayerAuto, &e.Name, &e.Hypothesis, &e.Description,
+	err := sc.Scan(&e.ID, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &e.PlatformID, &e.PlatformKey, &e.PlatformName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.LayerAuto, &e.Name, &e.Hypothesis, &e.Description,
 		&e.OwnerID, &e.OwnerName, &e.Status, &e.TrafficTarget, &e.TrafficHeld,
 		&targeting, &groups, &e.ReviewNote, &e.ReviewerName,
 		&e.LaunchedVariantID, &e.LaunchRollout, &e.StartedAt, &e.EndedAt, &e.LaunchedAt, &e.CreatedAt, &e.UpdatedAt, &e.Units)
@@ -233,9 +237,14 @@ func (s *Server) ListExperiments(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	where := []string{"true"}
 	var args []any
+	// business: an id, or a key (with platform, a key is unambiguous).
+	if p := q.Get("platform"); p != "" {
+		args = append(args, p)
+		where = append(where, fmt.Sprintf("(p.key = $%d OR p.id::text = $%d)", len(args), len(args)))
+	}
 	if b := q.Get("business"); b != "" {
 		args = append(args, b)
-		where = append(where, fmt.Sprintf("b.key = $%d", len(args)))
+		where = append(where, fmt.Sprintf("(b.key = $%d OR b.id::text = $%d)", len(args), len(args)))
 	}
 	if st := q.Get("status"); st != "" {
 		args = append(args, strings.Split(st, ","))

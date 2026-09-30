@@ -97,10 +97,10 @@ func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, err
 	exps := map[int64]*assign.Experiment{}
 	var list []*assign.Experiment
 	rows, err = db.QueryContext(ctx, `
-		SELECT e.id, b.key, e.layer_id, e.name, e.status, e.salt, array_to_string(e.buckets, ','), e.targeting,
+		SELECT e.id, b.key, p.key, e.layer_id, e.name, e.status, e.salt, array_to_string(e.buckets, ','), e.targeting,
 		       COALESCE(e.launched_variant_id, 0), COALESCE(extract(epoch FROM e.launched_at)::bigint, 0),
 		       COALESCE(extract(epoch FROM e.started_at)::bigint, 0), e.launch_rollout
-		FROM experiments e JOIN businesses b ON b.id = e.business_id
+		FROM experiments e JOIN businesses b ON b.id = e.business_id JOIN platforms p ON p.id = b.platform_id
 		WHERE e.status IN ('draft', 'in_review', 'approved', 'rejected', 'active', 'paused', 'launched')`)
 	if err != nil {
 		return nil, err
@@ -109,7 +109,7 @@ func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, err
 		e := &assign.Experiment{Whitelist: map[string]int64{}}
 		var buckets string
 		var targeting []byte
-		if err := rows.Scan(&e.ID, &e.BusinessKey, &e.LayerID, &e.Name, &e.Status, &e.Salt, &buckets, &targeting, &e.LaunchedVar, &e.LaunchOrder, &e.StartOrder, &e.LaunchRollout); err != nil {
+		if err := rows.Scan(&e.ID, &e.BusinessKey, &e.PlatformKey, &e.LayerID, &e.Name, &e.Status, &e.Salt, &buckets, &targeting, &e.LaunchedVar, &e.LaunchOrder, &e.StartOrder, &e.LaunchRollout); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -176,7 +176,26 @@ func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, err
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return assign.NewSnapshot(version, layers, list), nil
+	snap := assign.NewSnapshot(version, layers, list)
+	snap.Platforms = map[string][]string{}
+	prows, err := db.QueryContext(ctx, `SELECT p.key, b.key FROM platforms p LEFT JOIN businesses b ON b.platform_id = p.id ORDER BY 1, 2`)
+	if err != nil {
+		return nil, err
+	}
+	defer prows.Close()
+	for prows.Next() {
+		var p string
+		var b sql.NullString
+		if err := prows.Scan(&p, &b); err != nil {
+			return nil, err
+		}
+		if b.Valid {
+			snap.Platforms[p] = append(snap.Platforms[p], b.String)
+		} else if _, ok := snap.Platforms[p]; !ok {
+			snap.Platforms[p] = []string{}
+		}
+	}
+	return snap, prows.Err()
 }
 
 // ---- exposure logging ----

@@ -184,7 +184,7 @@ export const api = {
   createLayer: (name: string, description: string, diversion: Diversion) => request<Layer>("POST", "/layers", { name, description, diversion }),
   updateLayer: (id: number, name: string, description: string) => request<void>("PUT", `/layers/${id}`, { name, description }),
 
-  experiments: (p: { business?: string; status?: string; q?: string; mine?: string } = {}) =>
+  experiments: (p: { platform?: string; business?: string; status?: string; q?: string; mine?: string } = {}) =>
     request<Experiment[]>("GET", `/experiments${qs(p)}`),
   experiment: (id: number) => request<Experiment>("GET", `/experiments/${id}`),
   createExperiment: (e: ExperimentInput) => request<Experiment>("POST", "/experiments", e),
@@ -221,9 +221,12 @@ export const api = {
   deleteDiversion: (key: string) => request<void>("DELETE", `/diversions/${key}`),
   parameters: () => request<ParamValue[]>("GET", "/parameters"),
   launchedConfig: () =>
-    request<{ businesses: { business: string; name: string; fields: LaunchedField[] }[]; history: LaunchRecord[] }>("GET", "/parameters/launched"),
+    request<{ businesses: { key: string; platform: string; business: string; name: string; fields: LaunchedField[] }[]; history: LaunchRecord[] }>(
+      "GET",
+      "/parameters/launched"
+    ),
 
-  diagnose: (ids: Record<string, string>, business: string, attrs: Record<string, unknown>) =>
+  diagnose: (ids: Record<string, string>, platform: string, business: string, attrs: Record<string, unknown>) =>
     request<{ snapshot_version: number; result: { hits: Hit[]; params: Record<string, unknown>; trace: Step[]; conflicts?: unknown[] } }>(
       "POST",
       "/tools/diagnose",
@@ -231,12 +234,13 @@ export const api = {
         user_id: ids.user_id ?? "",
         device_id: ids.device_id ?? "",
         ids: Object.fromEntries(Object.entries(ids).filter(([k, v]) => k !== "user_id" && k !== "device_id" && v)),
+        platform,
         business,
         attrs,
       }
     ),
   paramSearch: (q: string) =>
-    request<{ experiment_id: number; experiment: string; business: string; status: string; variant: string; path: string }[]>(
+    request<{ experiment_id: number; experiment: string; platform: string; business: string; status: string; variant: string; path: string }[]>(
       "GET",
       `/tools/params${qs({ q })}`
     ),

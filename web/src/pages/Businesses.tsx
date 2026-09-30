@@ -472,7 +472,7 @@ export function DeleteBusinessModal({ business, onClose, onDeleted }: { business
           <p className="small muted">
             Options: keep it (rename it or edit its description), or <b>move it</b> to another platform with the edit button.
           </p>
-          <Link className="btn btn-sm" style={{ alignSelf: "flex-start" }} to={`/experiments?business=${business.key}`} onClick={onClose}>
+          <Link className="btn btn-sm" style={{ alignSelf: "flex-start" }} to={`/experiments?business=${business.id}`} onClick={onClose}>
             View its experiments
           </Link>
         </div>

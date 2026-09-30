@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/reynerpantou/libra/internal/serving"
 	"net/http"
 	"strings"
 	"time"
@@ -143,6 +144,9 @@ func (s *Server) CreatePlatform(w http.ResponseWriter, r *http.Request) {
 	}
 	p.Groups = 1
 	_ = audit(r.Context(), s.DB, user(r).ID, 0, "platform", p.ID, "create", "", "", req)
+	// Services resolve by platform and business: refresh the snapshot.
+	_ = serving.Bump(r.Context(), s.DB)
+	s.reload(r.Context())
 	p.Key, p.Name, p.Description, p.Businesses = req.Key, name, strings.TrimSpace(req.Description), []Business{}
 	writeJSON(w, http.StatusCreated, p)
 }
@@ -199,5 +203,8 @@ func (s *Server) DeletePlatform(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = audit(r.Context(), s.DB, user(r).ID, 0, "platform", id, "delete", "", "", nil)
+	// Services resolve by platform and business: refresh the snapshot.
+	_ = serving.Bump(r.Context(), s.DB)
+	s.reload(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }

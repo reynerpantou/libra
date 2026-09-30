@@ -16,6 +16,7 @@ type ParamValue struct {
 	Value        any    `json:"value"`
 	ExperimentID int64  `json:"experiment_id"`
 	Experiment   string `json:"experiment"`
+	Platform     string `json:"platform"`
 	Business     string `json:"business"`
 	Status       string `json:"status"` // active | launched
 	VariantKey   string `json:"variant_key"`
@@ -40,7 +41,7 @@ func (s *Server) ListParameters(w http.ResponseWriter, r *http.Request) {
 		if e.Status != assign.StatusActive && e.Status != assign.StatusLaunched {
 			continue
 		}
-		pv := ParamValue{ExperimentID: e.ID, Experiment: e.Name, Business: e.BusinessKey, Status: e.Status}
+		pv := ParamValue{ExperimentID: e.ID, Experiment: e.Name, Platform: e.PlatformKey, Business: e.BusinessKey, Status: e.Status}
 		if l := snap.Layers[e.LayerID]; l != nil {
 			pv.Layer, pv.LayerAuto, pv.Diversion = l.Name, l.Auto, l.Diversion
 		}
@@ -113,6 +114,7 @@ type LaunchedValue struct {
 type LaunchRecord struct {
 	ExperimentID int64          `json:"experiment_id"`
 	Experiment   string         `json:"experiment"`
+	Platform     string         `json:"platform"`
 	Business     string         `json:"business"`
 	Status       string         `json:"status"` // launched (serving) | archived (retired)
 	Variant      string         `json:"variant"`
@@ -130,9 +132,10 @@ type LaunchRecord struct {
 // earlier ones), and the history of every launch, including retired ones.
 func (s *Server) LaunchedConfig(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.DB.QueryContext(r.Context(), `
-		SELECT e.id, e.name, b.key, b.name, e.status, v.key, v.name, v.params, e.launched_at, e.launch_rollout, e.targeting
+		SELECT e.id, e.name, p.key, b.key, p.name || ' › ' || b.name, e.status, v.key, v.name, v.params, e.launched_at, e.launch_rollout, e.targeting
 		FROM experiments e
 		JOIN businesses b ON b.id = e.business_id
+		JOIN platforms p ON p.id = b.platform_id
 		JOIN variants v ON v.id = e.launched_variant_id
 		WHERE e.launched_at IS NOT NULL AND e.status IN ('launched', 'archived')
 		ORDER BY e.launched_at, e.id`)
@@ -142,6 +145,8 @@ func (s *Server) LaunchedConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type biz struct {
+		Key      string                    `json:"key"` // platform/business: unique
+		Platform string                    `json:"platform"`
 		Business string                    `json:"business"`
 		Name     string                    `json:"name"`
 		Fields   []*LaunchedField          `json:"fields"`
@@ -155,7 +160,7 @@ func (s *Server) LaunchedConfig(w http.ResponseWriter, r *http.Request) {
 		var rec LaunchRecord
 		var bizName string
 		var params, targeting []byte
-		if err := rows.Scan(&rec.ExperimentID, &rec.Experiment, &rec.Business, &bizName, &rec.Status, &rec.Variant, &rec.VariantName, &params,
+		if err := rows.Scan(&rec.ExperimentID, &rec.Experiment, &rec.Platform, &rec.Business, &bizName, &rec.Status, &rec.Variant, &rec.VariantName, &params,
 			&rec.LaunchedAt, &rec.Rollout, &targeting); err != nil {
 			serverError(w, r, err)
 			return
@@ -174,11 +179,12 @@ func (s *Server) LaunchedConfig(w http.ResponseWriter, r *http.Request) {
 		if rec.Status != assign.StatusLaunched {
 			continue // retired: no longer served
 		}
-		b := byBiz[rec.Business]
+		key := rec.Platform + "/" + rec.Business
+		b := byBiz[key]
 		if b == nil {
-			b = &biz{Business: rec.Business, Name: bizName, byPath: map[string]*LaunchedField{}}
-			byBiz[rec.Business] = b
-			order = append(order, rec.Business)
+			b = &biz{Key: key, Platform: rec.Platform, Business: rec.Business, Name: bizName, byPath: map[string]*LaunchedField{}}
+			byBiz[key] = b
+			order = append(order, key)
 		}
 		paths := make([]string, 0, len(flat))
 		for p := range flat {

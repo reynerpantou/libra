@@ -120,6 +120,7 @@ type Variant struct {
 type Experiment struct {
 	ID          int64
 	BusinessKey string
+	PlatformKey string
 	LayerID     int64
 	Name        string
 	Status      string
@@ -150,6 +151,53 @@ type Snapshot struct {
 	Version     int64
 	Layers      map[int64]*Layer
 	Experiments []*Experiment // sorted by id
+	// Platforms maps each platform key to its business keys.
+	Platforms map[string][]string
+}
+
+// Scope checks a request's platform and business against the known ones.
+// A business key alone is fine when only one platform has it (the platform
+// is filled in); with several platforms, a request must name one.
+func (s *Snapshot) Scope(platform, business string) (string, string, string) {
+	if platform != "" {
+		keys, ok := s.Platforms[platform]
+		if !ok {
+			return "", "", "unknown platform " + platform
+		}
+		if business != "" && !contains(keys, business) {
+			return "", "", fmt.Sprintf("platform %s has no business %s", platform, business)
+		}
+		return platform, business, ""
+	}
+	if business != "" {
+		var found []string
+		for p, keys := range s.Platforms {
+			if contains(keys, business) {
+				found = append(found, p)
+			}
+		}
+		switch len(found) {
+		case 0:
+			return "", "", "unknown business " + business
+		case 1:
+			return found[0], business, ""
+		}
+		sort.Strings(found)
+		return "", "", fmt.Sprintf("business %s exists on several platforms (%s); send platform too", business, strings.Join(found, ", "))
+	}
+	if len(s.Platforms) > 1 {
+		return "", "", "send platform (and optionally business): there are several platforms, and a request without one would mix their experiments"
+	}
+	return "", "", ""
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
 }
 
 // NewSnapshot indexes experiments into their layers' bucket tables. Only
@@ -211,6 +259,7 @@ type Request struct {
 	DeviceID string            `json:"device_id,omitempty"`
 	IDs      map[string]string `json:"ids,omitempty"` // other diversions, e.g. {"shop_id": "s-1"}
 	UnitID   string            `json:"unit_id,omitempty"`
+	Platform string            `json:"platform,omitempty"` // only this platform's experiments; empty = all
 	Business string            `json:"business,omitempty"` // only this business's experiments; empty = all
 	Attrs    map[string]any    `json:"attrs,omitempty"`
 }
@@ -248,6 +297,7 @@ type Hit struct {
 type Step struct {
 	ExperimentID  int64  `json:"experiment_id"`
 	Experiment    string `json:"experiment"`
+	Platform      string `json:"platform"`
 	Business      string `json:"business"`
 	Status        string `json:"status"`
 	Outcome       string `json:"outcome"`
@@ -280,12 +330,16 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 		v *Variant
 	}
 	for _, e := range s.Experiments {
-		step := Step{ExperimentID: e.ID, Experiment: e.Name, Business: e.BusinessKey, Status: e.Status, LayerBucket: -1, VariantBucket: -1}
+		step := Step{ExperimentID: e.ID, Experiment: e.Name, Platform: e.PlatformKey, Business: e.BusinessKey, Status: e.Status, LayerBucket: -1, VariantBucket: -1}
 		record := func(outcome, detail string) {
 			if trace {
 				step.Outcome, step.Detail = outcome, detail
 				res.Trace = append(res.Trace, step)
 			}
+		}
+		if req.Platform != "" && e.PlatformKey != req.Platform {
+			record("other_platform", "experiment belongs to platform "+e.PlatformKey)
+			continue
 		}
 		if req.Business != "" && e.BusinessKey != req.Business {
 			record("other_business", "experiment belongs to business "+e.BusinessKey)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/reynerpantou/libra/internal/serving"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -107,7 +108,7 @@ func (s *Server) CreateBusiness(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO businesses (platform_id, key, name, description, require_review) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
 		req.PlatformID, req.Key, name, strings.TrimSpace(req.Description), req.RequireReview).Scan(&id)
 	if isUniqueViolation(err) {
-		writeError(w, http.StatusConflict, "conflict", "a business with that key exists")
+		writeError(w, http.StatusConflict, "conflict", "this platform already has a business with that key")
 		return
 	}
 	if err != nil {
@@ -115,6 +116,9 @@ func (s *Server) CreateBusiness(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = audit(r.Context(), s.DB, user(r).ID, 0, "business", id, "create", "", "", req)
+	// Services resolve by platform and business: refresh the snapshot.
+	_ = serving.Bump(r.Context(), s.DB)
+	s.reload(r.Context())
 	b, _ := s.loadBusiness(r, id)
 	writeJSON(w, http.StatusCreated, b)
 }
@@ -152,6 +156,9 @@ func (s *Server) UpdateBusiness(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = audit(r.Context(), s.DB, user(r).ID, 0, "business", id, "update", "", "", req)
+	// Services resolve by platform and business: refresh the snapshot.
+	_ = serving.Bump(r.Context(), s.DB)
+	s.reload(r.Context())
 	b, _ := s.loadBusiness(r, id)
 	writeJSON(w, http.StatusOK, b)
 }
@@ -224,6 +231,9 @@ func (s *Server) DeleteBusiness(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = audit(r.Context(), s.DB, user(r).ID, 0, "business", id, "delete", "", "", nil)
+	// Services resolve by platform and business: refresh the snapshot.
+	_ = serving.Bump(r.Context(), s.DB)
+	s.reload(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 
