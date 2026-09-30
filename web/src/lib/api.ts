@@ -184,8 +184,8 @@ export const api = {
   createLayer: (name: string, description: string, diversion: Diversion) => request<Layer>("POST", "/layers", { name, description, diversion }),
   updateLayer: (id: number, name: string, description: string) => request<void>("PUT", `/layers/${id}`, { name, description }),
 
-  experiments: (p: { platform?: string; business?: string; status?: string; q?: string; mine?: string } = {}) =>
-    request<Experiment[]>("GET", `/experiments${qs(p)}`),
+  experiments: (p: { platform?: string; business?: string; status?: string; q?: string; mine?: string; page: number; size: number }) =>
+    request<{ items: Experiment[]; total: number; page: number; size: number }>("GET", `/experiments${qs(p)}`),
   experiment: (id: number) => request<Experiment>("GET", `/experiments/${id}`),
   createExperiment: (e: ExperimentInput) => request<Experiment>("POST", "/experiments", e),
   updateExperiment: (id: number, e: ExperimentInput) => request<Experiment>("PUT", `/experiments/${id}`, e),

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Empty, ErrorBox, Field, Icon, Loading, Modal, StatusBadge, seriesColor } from "../components/ui";
+import { Pager, usePaged } from "../components/Pager";
 import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { trafficPct } from "../lib/format";
@@ -17,6 +18,15 @@ export default function Layers() {
   const [diversion, setDiversion] = useState<Diversion>("user_id");
   const [error, setError] = useState("");
   const diversions = useDiversions();
+  const [q, setQ] = useState("");
+  const [div, setDiv] = useState("");
+  const query = q.trim().toLowerCase();
+  const found = (layers.data ?? []).filter(
+    (l) =>
+      (!div || l.diversion === div) &&
+      (!query || [l.name, l.description, ...l.holders.map((h) => h.name)].some((x) => x.toLowerCase().includes(query)))
+  );
+  const paged = usePaged(found, 10, `${query}|${div}`);
   return (
     <div className="page">
       <div className="page-head">
@@ -35,15 +45,31 @@ export default function Layers() {
       </div>
       <Diversions />
       <ErrorBox error={layers.error} />
+      {(layers.data?.length ?? 0) > 0 && (
+        <div className="card card-pad row" style={{ gap: 10 }}>
+          <input className="input" style={{ flex: 1, maxWidth: 420 }} placeholder="Search layers by name, description or experiment…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <select className="input" style={{ width: 200 }} value={div} onChange={(e) => setDiv(e.target.value)} aria-label="Diversion">
+            <option value="">Any diversion</option>
+            {diversions.map((d) => (
+              <option key={d.key} value={d.key}>
+                Split by {d.name}
+              </option>
+            ))}
+          </select>
+          <span className="small faint">
+            {found.length} of {layers.data?.length} layers
+          </span>
+        </div>
+      )}
       {layers.loading && !layers.data ? (
         <Loading />
-      ) : layers.data?.length === 0 ? (
+      ) : found.length === 0 ? (
         <div className="card">
-          <Empty title="No layers yet" />
+          <Empty title={layers.data?.length ? "No layers match" : "No layers yet"} />
         </div>
       ) : (
         <div className="stack">
-          {layers.data?.map((l) => (
+          {paged.slice.map((l) => (
             <section key={l.id} className="card card-pad stack-sm">
               <div className="row-between">
                 <div>
@@ -76,6 +102,11 @@ export default function Layers() {
               )}
             </section>
           ))}
+          {paged.pages > 1 && (
+            <div className="card">
+              <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="layers" />
+            </div>
+          )}
         </div>
       )}
       {open && (

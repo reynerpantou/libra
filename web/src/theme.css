@@ -422,3 +422,15 @@ pre.code {
 .rep-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 mark.hit { background: var(--warn-soft); color: inherit; border-radius: 3px; padding: 0 1px; }
 .choice-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; }
+.pager { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px; border-top: 1px solid var(--border); }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.gchip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent-text); border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 12.5px; }
+.gchip.locked { border-color: var(--good); background: var(--good-soft); color: var(--good); padding-right: 10px; }
+.gchip button { border: 0; background: none; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 4px; border-radius: 999px; }
+.gchip button:hover { background: var(--surface); }
+.gpick-box { border: 1px solid var(--border); border-radius: 8px; }
+.gpick-rows { display: grid; }
+.gpick-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 12px; border-top: 1px solid var(--border); cursor: pointer; }
+.gpick-row.on { background: var(--accent-soft); }
+.gpick-row input { margin-top: 3px; }
+.ellipsis { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

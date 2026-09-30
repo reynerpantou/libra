@@ -1,9 +1,12 @@
 import { useMemo, useState } from "react";
 import type { MetricBrief, MetricGroup } from "../lib/types";
+import { Pager, usePaged } from "./Pager";
 
-// GroupPicker chooses an experiment's metric groups from every business and
-// platform. Default groups of the experiment's own business and platform are
-// always included and shown locked.
+// GroupPicker chooses metric groups at any scale: what's picked shows as
+// chips; finding more is a search with platform and owner filters over a
+// paged list. Empty groups have nothing to report and aren't offered. With
+// lockDefaults, the defaults of the experiment's own business and platform
+// are always in (shown, not removable).
 export function GroupPicker({
   groups,
   metrics,
@@ -11,6 +14,7 @@ export function GroupPicker({
   onChange,
   businessId,
   platformId,
+  platformName,
   lockDefaults = true,
 }: {
   groups: MetricGroup[];
@@ -19,92 +23,121 @@ export function GroupPicker({
   onChange: (ids: number[]) => void;
   businessId: number;
   platformId: number;
-  lockDefaults?: boolean; // the experiment form: its own defaults are always in
+  platformName: string;
+  lockDefaults?: boolean;
 }) {
   const [q, setQ] = useState("");
+  const [scope, setScope] = useState<"platform" | "all">(platformName ? "platform" : "all");
+  const [owner, setOwner] = useState("");
   const metricName = useMemo(() => new Map(metrics.map((m) => [m.id, m.name])), [metrics]);
-  const isAuto = (g: MetricGroup) => lockDefaults && g.is_default && ((g.business_id ?? 0) === businessId || ((g.platform_id ?? 0) === platformId && !!platformId));
+  const mine = (g: MetricGroup) => (g.business_id ?? 0) === businessId || (!!platformId && (g.platform_id ?? 0) === platformId);
+  const isLocked = (g: MetricGroup) => lockDefaults && g.is_default && mine(g);
+  const ids = (g: MetricGroup) => g.metric_ids ?? [];
   const selected = new Set(value);
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  const locked = groups.filter(isLocked);
+  const picked = value.map((id) => byId.get(id)).filter((g): g is MetricGroup => !!g && !isLocked(g));
 
-  // Owners in order: this experiment's platform & business first.
-  const owners = useMemo(() => {
-    const by = new Map<string, { key: string; label: string; kind: string; mine: boolean; groups: MetricGroup[] }>();
-    for (const g of groups) {
-      const key = `${g.owner_kind}:${g.business_id ?? g.platform_id}`;
-      const mine = (g.business_id ?? 0) === businessId || ((g.platform_id ?? 0) === platformId && !!platformId);
-      if (!by.has(key)) by.set(key, { key, label: g.owner, kind: g.owner_kind, mine, groups: [] });
-      by.get(key)!.groups.push(g);
-    }
-    return Array.from(by.values()).sort((a, b) => Number(b.mine) - Number(a.mine) || Number(b.kind === "platform") - Number(a.kind === "platform") || a.label.localeCompare(b.label));
-  }, [groups, businessId, platformId]);
-
-  const match = (g: MetricGroup) => {
-    if (!q.trim()) return true;
-    const s = q.toLowerCase();
-    return (
-      g.name.toLowerCase().includes(s) ||
-      g.owner.toLowerCase().includes(s) ||
-      (g.metric_ids ?? []).some((id) => (metricName.get(id) ?? "").toLowerCase().includes(s))
-    );
-  };
+  const inScope = groups.filter((g) => !isLocked(g) && ids(g).length > 0 && (scope === "all" || g.platform === platformName));
+  const owners = Array.from(new Map(inScope.map((g) => [`${g.owner_kind}:${g.owner}`, g])).values()).sort(
+    (a, b) => Number(mine(b)) - Number(mine(a)) || Number(b.owner_kind === "platform") - Number(a.owner_kind === "platform") || a.owner.localeCompare(b.owner)
+  );
+  const s = q.trim().toLowerCase();
+  const results = inScope
+    .filter((g) => !owner || `${g.owner_kind}:${g.owner}` === owner)
+    .filter((g) => !s || g.name.toLowerCase().includes(s) || g.owner.toLowerCase().includes(s) || ids(g).some((id) => (metricName.get(id) ?? "").toLowerCase().includes(s)))
+    .sort((a, b) => Number(mine(b)) - Number(mine(a)) || a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const paged = usePaged(results, 10, `${s}|${scope}|${owner}`);
+  const emptyHidden = groups.filter((g) => !isLocked(g) && ids(g).length === 0).length;
   const toggle = (id: number) => onChange(selected.has(id) ? value.filter((x) => x !== id) : [...value, id]);
-  const setMany = (ids: number[], on: boolean) => onChange(on ? Array.from(new Set([...value, ...ids])) : value.filter((x) => !ids.includes(x)));
-  const pickable = groups.filter((g) => !isAuto(g));
-  const count = new Set([...value, ...groups.filter(isAuto).map((g) => g.id)]).size;
+  const label = (g: MetricGroup) => `${g.name} · ${g.owner}`;
 
   return (
     <div className="gpick">
-      <div className="row" style={{ gap: 8 }}>
-        <input className="input" style={{ flex: 1, minWidth: 180 }} placeholder="Search groups, businesses or metrics…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <span className="small faint nowrap">{count} groups in the report</span>
-        <button type="button" className="btn btn-sm" onClick={() => setMany(pickable.filter(match).map((g) => g.id), true)}>
-          Select all{q ? " shown" : ""}
-        </button>
-        <button type="button" className="btn btn-sm" onClick={() => onChange([])} disabled={value.length === 0}>
-          Clear
-        </button>
+      {locked.length > 0 && (
+        <div className="chip-row">
+          <span className="small faint">Always included:</span>
+          {locked.map((g) => (
+            <span key={g.id} className="gchip locked" title={ids(g).map((id) => metricName.get(id) ?? `#${id}`).join(", ") || "No metrics yet"}>
+              {label(g)} {ids(g).length === 0 && <span className="faint">(no metrics yet)</span>}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="chip-row">
+        <span className="small faint">Selected ({picked.length}):</span>
+        {picked.length === 0 && <span className="small faint">none</span>}
+        {picked.map((g) => (
+          <span key={g.id} className="gchip" title={ids(g).map((id) => metricName.get(id) ?? `#${id}`).join(", ")}>
+            {label(g)}
+            <button type="button" aria-label={`Remove ${g.name}`} onClick={() => toggle(g.id)}>
+              ×
+            </button>
+          </span>
+        ))}
+        {picked.length > 0 && (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onChange(value.filter((id) => byId.get(id) && isLocked(byId.get(id)!)))}>
+            Clear
+          </button>
+        )}
       </div>
-      <div className="gpick-list">
-        {owners.map((o) => {
-          const shown = o.groups.filter(match);
-          if (shown.length === 0) return null;
-          const ids = shown.filter((g) => !isAuto(g)).map((g) => g.id);
-          const all = ids.length > 0 && ids.every((id) => selected.has(id));
-          return (
-            <div key={o.key} className="gpick-owner">
-              <div className="row-between">
-                <div className="small" style={{ fontWeight: 600 }}>
-                  {o.label} <span className="faint">· {o.kind}</span> {o.mine && <span className="badge b-accent">this experiment</span>}
-                </div>
-                {ids.length > 1 && (
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMany(ids, !all)}>
-                    {all ? "Unselect all" : "Select all"}
-                  </button>
-                )}
-              </div>
-              <div className="gpick-items">
-                {shown.map((g) => {
-                  const auto = isAuto(g);
-                  const on = auto || selected.has(g.id);
-                  return (
-                    <label key={g.id} className={`gpick-item ${on ? "on" : ""}`} title={(g.metric_ids ?? []).map((id) => metricName.get(id) ?? `#${id}`).join(", ")}>
-                      <input type="checkbox" checked={on} disabled={auto} onChange={() => toggle(g.id)} />
-                      <span style={{ minWidth: 0 }}>
-                        <span style={{ fontWeight: 600 }}>{g.name}</span>{" "}
-                        {auto ? <span className="badge b-good">default · always</span> : g.is_default ? <span className="badge" title={`Included in every experiment of ${g.owner}`}>default of {g.owner}</span> : null}
-                        <span className="faint small" style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {(g.metric_ids ?? []).length} metrics: {(g.metric_ids ?? []).map((id) => metricName.get(id) ?? `#${id}`).join(", ")}
-                        </span>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-        {groups.length === 0 && <div className="faint small">No metric groups yet — the report shows all of the business's metrics.</div>}
+      <div className="gpick-box">
+        <div className="row" style={{ gap: 8, padding: 10 }}>
+          <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="Find groups by name, owner or metric…" value={q} onChange={(e) => setQ(e.target.value)} />
+          {platformName && (
+            <select className="input" style={{ width: 170 }} value={scope} onChange={(e) => setScope(e.target.value as "platform" | "all")} aria-label="Scope">
+              <option value="platform">{platformName} only</option>
+              <option value="all">All platforms</option>
+            </select>
+          )}
+          <select className="input" style={{ width: 190 }} value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Owner">
+            <option value="">Any business or platform</option>
+            {owners.map((g) => (
+              <option key={`${g.owner_kind}:${g.owner}`} value={`${g.owner_kind}:${g.owner}`}>
+                {g.owner} ({g.owner_kind})
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={results.length === 0}
+            onClick={() => onChange(Array.from(new Set([...value, ...results.map((g) => g.id)])))}
+            title="Add every group matching the filters"
+          >
+            Select all {results.length}
+          </button>
+        </div>
+        {results.length === 0 ? (
+          <div className="small faint" style={{ padding: "0 12px 12px" }}>
+            No groups match.{scope === "platform" && " Try All platforms."}
+          </div>
+        ) : (
+          <div className="gpick-rows">
+            {paged.slice.map((g) => {
+              const on = selected.has(g.id);
+              return (
+                <label key={g.id} className={`gpick-row ${on ? "on" : ""}`}>
+                  <input type="checkbox" checked={on} onChange={() => toggle(g.id)} />
+                  <span style={{ minWidth: 0, flex: 1 }}>
+                    <span style={{ fontWeight: 600 }}>{g.name}</span>{" "}
+                    <span className="faint small">
+                      {g.owner} · {g.owner_kind}
+                    </span>{" "}
+                    {mine(g) && <span className="badge b-accent">this experiment's</span>}{" "}
+                    {g.is_default && !mine(g) && <span className="badge">default of {g.owner}</span>}
+                    <span className="faint small ellipsis">
+                      {ids(g).length} metrics: {ids(g).map((id) => metricName.get(id) ?? `#${id}`).join(", ")}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="groups" />
       </div>
+      {emptyHidden > 0 && <div className="small faint">{emptyHidden} empty group(s) not shown — add metrics to them to use them.</div>}
     </div>
   );
 }

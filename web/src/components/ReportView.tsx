@@ -782,8 +782,6 @@ function MetricsChooser({
   const [others, setOthers] = useState(false);
   const [q, setQ] = useState("");
   const ownNames = [e.business_name, e.platform_name];
-  // Empty groups have nothing to show; other platforms only on request.
-  const usable = groups.filter((g) => (g.metric_ids ?? []).length > 0 && (others || g.platform === e.platform_name));
   const pickable = metrics.filter((m) => others || ownNames.includes(m.owner));
   const s = q.trim().toLowerCase();
   const shownMetrics = pickable.filter((m) => !s || [m.name, m.key, m.owner].some((x) => x.toLowerCase().includes(s)));
@@ -830,13 +828,16 @@ function MetricsChooser({
                 onPick(t === "metrics" ? { kind: "metrics", ids: [] } : { kind: "groups", ids: current });
               }}
             />
-            <label className="check small">
-              <input type="checkbox" checked={others} onChange={(x) => setOthers(x.target.checked)} /> Include other platforms
-            </label>
+            {tab === "metrics" && (
+              <label className="check small">
+                <input type="checkbox" checked={others} onChange={(x) => setOthers(x.target.checked)} /> Include other platforms
+              </label>
+            )}
           </div>
           {tab === "groups" ? (
             <GroupPicker
-              groups={usable}
+              groups={groups}
+              platformName={e.platform_name}
               metrics={metrics}
               value={pick.kind === "groups" ? pick.ids : []}
               onChange={(ids) => onPick({ kind: "groups", ids })}

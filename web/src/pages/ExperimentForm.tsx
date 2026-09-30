@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { Combobox } from "../components/Combobox";
 import { GroupPicker } from "../components/GroupPicker";
 import { JsonEditor, NamespacedJson } from "../components/JsonEditor";
 import { ErrorBox, Field, Icon, Loading, Segmented, TrafficBar } from "../components/ui";
@@ -44,7 +45,7 @@ export default function ExperimentForm() {
   const [name, setName] = useState("");
   const [hypothesis, setHypothesis] = useState("");
   const [description, setDescription] = useState("");
-  const [ownerId, setOwnerId] = useState<number | null>(null);
+  const [platformPick, setPlatformPick] = useState("");
   const [traffic, setTraffic] = useState(100);
   const [targeting, setTargeting] = useState<Targeting>({ groups: [] });
   const [groupIds, setGroupIds] = useState<number[]>([]);
@@ -65,7 +66,6 @@ export default function ExperimentForm() {
     setName(e.name);
     setHypothesis(e.hypothesis);
     setDescription(e.description);
-    setOwnerId(e.owner_id);
     setTraffic(e.traffic_target);
     setTargeting(e.targeting);
     setGroupIds(e.metric_group_ids ?? []);
@@ -76,10 +76,13 @@ export default function ExperimentForm() {
 
   useEffect(() => {
     if (editing || !refs.data) return;
-    if (!businessId && refs.data.businesses[0]) setBusinessId(refs.data.businesses[0].id);
+    // Only preselect what's unambiguous: a single platform, a single business.
+    const keys = Array.from(new Set(refs.data.businesses.map((b) => b.platform_key)));
+    if (!platformPick && keys.length === 1) setPlatformPick(keys[0]);
+    const inPlatform = refs.data.businesses.filter((b) => b.platform_key === (platformPick || keys[0]));
+    if (!businessId && keys.length === 1 && inPlatform.length === 1) setBusinessId(inPlatform[0].id);
     if (!layerId && refs.data.layers[0]) setLayerId(refs.data.layers[0].id);
-    if (ownerId === null && user) setOwnerId(user.id);
-  }, [refs.data, editing, businessId, layerId, ownerId, user]);
+  }, [refs.data, editing, businessId, layerId, platformPick]);
 
   const locked = existing.data?.status === "active" || existing.data?.status === "paused";
   const total = variants.reduce((s, v) => s + (Number(v.weight) || 0), 0);
@@ -87,6 +90,13 @@ export default function ExperimentForm() {
   const layerFree = mode === "auto" ? 1000 : layer ? 1000 - layer.used_buckets + (existing.data?.layer_id === layerId ? existing.data.traffic_held : 0) : 1000;
   const business = refs.data?.businesses.find((b) => b.id === businessId);
   const platformKey = business?.platform_key ?? existing.data?.platform_key ?? "";
+  const shownPlatform = business?.platform_key ?? platformPick;
+  const platformOptions = Array.from(new Map((refs.data?.businesses ?? []).map((b) => [b.platform_key, b.platform_name])).entries())
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .map(([key, name]) => ({ value: key, label: name, hint: key }));
+  const businessOptions = (refs.data?.businesses ?? [])
+    .filter((b) => b.platform_key === shownPlatform)
+    .map((b) => ({ value: String(b.id), label: b.name, hint: b.key }));
   // Don't let a draft plan more traffic than its layer has free.
   useEffect(() => {
     if (!locked && traffic > layerFree) setTraffic(layerFree);
@@ -124,7 +134,7 @@ export default function ExperimentForm() {
       name,
       hypothesis,
       description,
-      owner_id: ownerId,
+      owner_id: null, // the server sets it: the creator owns the experiment
       traffic_target: traffic,
       targeting,
       metric_group_ids: groupIds,
@@ -184,24 +194,39 @@ export default function ExperimentForm() {
           <Field label="Notes">
             <textarea className="input" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
           </Field>
-          <div className="grid-2">
-            <Field label="Business" hint="Where the experiment lives; its and its platform's default metric groups are always in the report.">
-              <select className="input" disabled={locked} value={businessId} onChange={(e) => setBusinessId(Number(e.target.value))}>
-                {refs.data?.businesses.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.platform_name} › {b.name}
-                  </option>
-                ))}
-              </select>
+          <div className="grid-3">
+            <Field label="Platform" hint="Type to search.">
+              {locked ? (
+                <input className="input" disabled value={business?.platform_name ?? existing.data?.platform_name ?? ""} />
+              ) : (
+                <Combobox
+                  options={platformOptions}
+                  value={shownPlatform}
+                  onChange={(v) => {
+                    setPlatformPick(v);
+                    if (business?.platform_key !== v) {
+                      setBusinessId(0);
+                      setGroupIds([]);
+                    }
+                  }}
+                  placeholder="Choose a platform"
+                />
+              )}
             </Field>
-            <Field label="Owner">
-              <select className="input" value={ownerId ?? ""} onChange={(e) => setOwnerId(Number(e.target.value))}>
-                {refs.data?.users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.display_name}
-                  </option>
-                ))}
-              </select>
+            <Field label="Business" hint="Its and its platform's default metric groups are always in the report.">
+              {locked ? (
+                <input className="input" disabled value={business?.name ?? existing.data?.business_name ?? ""} />
+              ) : (
+                <Combobox
+                  options={businessOptions}
+                  value={businessId ? String(businessId) : ""}
+                  onChange={(v) => setBusinessId(Number(v))}
+                  placeholder={shownPlatform ? "Choose a business" : "Choose a platform first"}
+                />
+              )}
+            </Field>
+            <Field label="Owner" hint={editing ? undefined : "Whoever creates the experiment owns it."}>
+              <input className="input" disabled value={editing ? existing.data?.owner_name || "—" : `${user?.display_name ?? ""} (you)`} />
             </Field>
           </div>
         </section>
@@ -214,14 +239,19 @@ export default function ExperimentForm() {
               section per group. With none picked, the report shows all of the business's metrics plus the defaults.
             </p>
           </div>
-          <GroupPicker
-            groups={refs.data?.groups ?? []}
-            metrics={refs.data?.metrics ?? []}
-            value={groupIds}
-            onChange={setGroupIds}
-            businessId={businessId}
-            platformId={business?.platform_id ?? 0}
-          />
+          {business ? (
+            <GroupPicker
+              groups={refs.data?.groups ?? []}
+              metrics={refs.data?.metrics ?? []}
+              value={groupIds}
+              onChange={setGroupIds}
+              businessId={businessId}
+              platformId={business.platform_id}
+              platformName={business.platform_name}
+            />
+          ) : (
+            <div className="small faint">Choose the business first.</div>
+          )}
         </section>
 
         <section className="card card-pad stack">

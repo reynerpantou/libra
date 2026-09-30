@@ -255,13 +255,27 @@ func (s *Server) ListExperiments(w http.ResponseWriter, r *http.Request) {
 	}
 	if text := strings.TrimSpace(q.Get("q")); text != "" {
 		args = append(args, "%"+strings.ToLower(text)+"%")
-		where = append(where, fmt.Sprintf("(lower(e.name) LIKE $%d OR lower(e.hypothesis) LIKE $%d)", len(args), len(args)))
+		where = append(where, fmt.Sprintf("(lower(e.name) LIKE $%d OR lower(e.hypothesis) LIKE $%d OR e.id::text LIKE $%d)", len(args), len(args), len(args)))
 	}
 	if q.Get("mine") == "1" {
 		args = append(args, user(r).ID)
 		where = append(where, fmt.Sprintf("e.owner_id = $%d", len(args)))
 	}
-	rows, err := s.DB.QueryContext(r.Context(), experimentSelect+` WHERE `+strings.Join(where, " AND ")+` ORDER BY e.updated_at DESC LIMIT 500`, args...)
+	// With page, the response is one page plus the total: {items, total}.
+	// Without, the most recent 500 (older clients).
+	cond := strings.Join(where, " AND ")
+	paged := q.Get("page") != ""
+	page, size := 1, 25
+	if paged {
+		fmt.Sscan(q.Get("page"), &page)
+		fmt.Sscan(q.Get("size"), &size)
+		page, size = max(page, 1), min(max(size, 1), 100)
+	}
+	limit := " LIMIT 500"
+	if paged {
+		limit = fmt.Sprintf(" LIMIT %d OFFSET %d", size, (page-1)*size)
+	}
+	rows, err := s.DB.QueryContext(r.Context(), experimentSelect+` WHERE `+cond+` ORDER BY e.updated_at DESC, e.id`+limit, args...)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -276,7 +290,18 @@ func (s *Server) ListExperiments(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, e)
 	}
-	writeJSON(w, http.StatusOK, out)
+	if !paged {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	var total int
+	if err := s.DB.QueryRowContext(r.Context(), `
+		SELECT count(*) FROM experiments e JOIN businesses b ON b.id = e.business_id JOIN platforms p ON p.id = b.platform_id
+		WHERE `+cond, args...).Scan(&total); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out, "total": total, "page": page, "size": size})
 }
 
 func (s *Server) loadExperiment(ctx context.Context, id int64, full bool) (Experiment, error) {
@@ -435,10 +460,8 @@ func (s *Server) CreateExperiment(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, msg)
 		return
 	}
+	// The creator owns the experiment.
 	owner := user(r).ID
-	if req.OwnerID != nil {
-		owner = *req.OwnerID
-	}
 	salt, err := auth.NewToken()
 	if err != nil {
 		serverError(w, r, err)
@@ -630,10 +653,7 @@ func (s *Server) UpdateExperiment(w http.ResponseWriter, r *http.Request) {
 	if cur.Status == assign.StatusApproved || cur.Status == assign.StatusRejected {
 		next = assign.StatusDraft
 	}
-	owner := cur.OwnerID
-	if req.OwnerID != nil {
-		owner = req.OwnerID
-	}
+	owner := cur.OwnerID // ownership doesn't change by editing
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		serverError(w, r, err)

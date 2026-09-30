@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Empty, ErrorBox, Icon, Loading, StatusBadge } from "../components/ui";
 import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { ago, fmtInt, trafficPct } from "../lib/format";
 import { useAsync, useDebounced } from "../lib/hooks";
+import { Pager } from "../components/Pager";
 
 const STATUS_FILTERS: [string, string][] = [
   ["", "All open"],
@@ -24,13 +25,31 @@ export default function Experiments() {
   const canEdit = useCan("editor");
   const nav = useNavigate();
   const businesses = useAsync(() => api.businesses(), []);
-  const list = useAsync(() => api.experiments({ platform, business, status, q: dq }), [platform, business, status, dq]);
+  const page = Math.max(1, Number(params.get("page")) || 1);
+  const size = Number(params.get("size")) || 25;
+  const list = useAsync(() => api.experiments({ platform, business, status, q: dq, page, size }), [platform, business, status, dq, page, size]);
+  const items = list.data?.items;
+  // A new search starts at page 1.
+  const firstSearch = useRef(true);
+  useEffect(() => {
+    if (firstSearch.current) {
+      firstSearch.current = false;
+      return;
+    }
+    if (params.get("page")) {
+      const next = new URLSearchParams(params);
+      next.delete("page");
+      setParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dq]);
   const platforms = Array.from(new Map((businesses.data ?? []).map((b) => [b.platform_key, b.platform_name])).entries());
 
   const set = (k: string, v: string) => {
     const next = new URLSearchParams(params);
     if (v) next.set(k, v);
     else next.delete(k);
+    if (k !== "page") next.delete("page"); // a new filter starts at page 1
     setParams(next, { replace: true });
   };
 
@@ -88,12 +107,12 @@ export default function Experiments() {
                 ))}
             </select>
           </div>
-          <input className="input" style={{ width: 240 }} placeholder="Search name or hypothesis" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className="input" style={{ width: 240 }} placeholder="Search name, hypothesis or id" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <ErrorBox error={list.error} />
         {list.loading && !list.data ? (
           <Loading />
-        ) : list.data && list.data.length === 0 ? (
+        ) : items && items.length === 0 ? (
           <Empty title="No experiments here">
             {canEdit ? (
               <p>
@@ -119,7 +138,7 @@ export default function Experiments() {
                 </tr>
               </thead>
               <tbody>
-                {list.data?.map((e) => (
+                {items?.map((e) => (
                   <tr key={e.id} className="clickable" onClick={() => nav(`/experiments/${e.id}`)}>
                     <td>
                       <div style={{ fontWeight: 600 }}>{e.name}</div>
@@ -143,6 +162,22 @@ export default function Experiments() {
               </tbody>
             </table>
           </div>
+        )}
+        {list.data && (
+          <Pager
+            page={page}
+            pages={Math.max(1, Math.ceil(list.data.total / size))}
+            total={list.data.total}
+            size={size}
+            onPage={(p) => set("page", String(p))}
+            onSize={(n) => {
+              const next = new URLSearchParams(params);
+              next.set("size", String(n));
+              next.delete("page");
+              setParams(next, { replace: true });
+            }}
+            noun="experiments"
+          />
         )}
       </div>
     </div>

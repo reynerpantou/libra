@@ -3,6 +3,7 @@ import { Empty, ErrorBox, Field, Icon, Loading, Modal } from "../components/ui";
 import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { useAsync } from "../lib/hooks";
+import { Pager, usePaged } from "../components/Pager";
 import type { Attribute, AttrType } from "../lib/types";
 
 const TYPE_HELP: Record<AttrType, string> = {
@@ -16,6 +17,13 @@ const TYPE_HELP: Record<AttrType, string> = {
 export default function Attributes() {
   const list = useAsync(() => api.attributes(), []);
   const discovered = useAsync(() => api.discoveredAttributes(), []);
+  const [q, setQ] = useState("");
+  const [type, setType] = useState("");
+  const query = q.trim().toLowerCase();
+  const found = (list.data ?? []).filter(
+    (a) => (!type || a.type === type) && (!query || [a.key, a.name, a.description, ...a.options].some((x) => x.toLowerCase().includes(query)))
+  );
+  const paged = usePaged(found, 25, `${query}|${type}`);
   const canEdit = useCan("editor");
   const [editing, setEditing] = useState<Attribute | Partial<Attribute> | null>(null);
   const [error, setError] = useState("");
@@ -41,8 +49,25 @@ export default function Attributes() {
       ) : (
         <div className="stack">
           <section className="card">
-            {list.data?.length === 0 ? (
-              <Empty title="No attributes yet" />
+            {(list.data?.length ?? 0) > 0 && (
+              <div className="card-head">
+                <div className="row" style={{ gap: 10, flex: 1 }}>
+                  <input className="input" style={{ flex: 1, maxWidth: 380 }} placeholder="Search attributes by key, name or value…" value={q} onChange={(e) => setQ(e.target.value)} />
+                  <select className="input" style={{ width: 150 }} value={type} onChange={(e) => setType(e.target.value)} aria-label="Type">
+                    <option value="">Any type</option>
+                    <option value="string">string</option>
+                    <option value="number">number</option>
+                    <option value="version">version</option>
+                    <option value="boolean">boolean</option>
+                  </select>
+                  <span className="small faint">
+                    {found.length} of {list.data?.length}
+                  </span>
+                </div>
+              </div>
+            )}
+            {found.length === 0 ? (
+              <Empty title={list.data?.length ? "No attributes match" : "No attributes yet"} />
             ) : (
               <div className="table-wrap">
                 <table className="tbl">
@@ -56,7 +81,7 @@ export default function Attributes() {
                     </tr>
                   </thead>
                   <tbody>
-                    {list.data?.map((a) => (
+                    {paged.slice.map((a) => (
                       <tr key={a.id}>
                         <td>
                           <div className="mono" style={{ fontWeight: 600 }}>
@@ -115,6 +140,7 @@ export default function Attributes() {
                 </table>
               </div>
             )}
+            <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="attributes" />
           </section>
           {(discovered.data?.length ?? 0) > 0 && (
             <section className="card">

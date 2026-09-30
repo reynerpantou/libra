@@ -8,6 +8,12 @@ import { fmtDateTime, fmtInt, fmtValue } from "../lib/format";
 import { useAsync, useDebounced } from "../lib/hooks";
 import type { Business, EventSummary, Filter, Measure, Metric, MetricGroup, Scope } from "../lib/types";
 import { DeleteBusinessModal, slug } from "./Businesses";
+import { Pager, usePaged } from "../components/Pager";
+
+const matchText = (q: string, ...xs: (string | undefined)[]) => {
+  const s = q.trim().toLowerCase();
+  return !s || xs.some((x) => (x ?? "").toLowerCase().includes(s));
+};
 
 type Tab = "metrics" | "measures" | "groups" | "data" | "settings";
 
@@ -92,6 +98,9 @@ export function Metrics({ scope, metrics, measures, reload }: { scope: Scope; me
   const canEdit = useCan("editor");
   const [editing, setEditing] = useState<Metric | "new" | null>(null);
   const [error, setError] = useState("");
+  const [q, setQ] = useState("");
+  const found = metrics.filter((m) => matchText(q, m.name, m.key, m.formula, m.description));
+  const paged = usePaged(found, 25, q);
   return (
     <div className="stack">
       <div className="alert alert-info small">
@@ -102,6 +111,7 @@ export function Metrics({ scope, metrics, measures, reload }: { scope: Scope; me
       <section className="card">
         <div className="card-head">
           <h2>Metrics</h2>
+          <input className="input" style={{ maxWidth: 320, flex: 1 }} placeholder="Search metrics by name, key or formula…" value={q} onChange={(e) => setQ(e.target.value)} />
           {canEdit && (
             <button className="btn btn-primary btn-sm" onClick={() => setEditing("new")} disabled={measures.length === 0}>
               <Icon name="plus" /> New metric
@@ -124,7 +134,7 @@ export function Metrics({ scope, metrics, measures, reload }: { scope: Scope; me
                 </tr>
               </thead>
               <tbody>
-                {metrics.map((m) => (
+                {paged.slice.map((m) => (
                   <tr key={m.id}>
                     <td>
                       <div style={{ fontWeight: 600 }}>
@@ -173,8 +183,10 @@ export function Metrics({ scope, metrics, measures, reload }: { scope: Scope; me
                 ))}
               </tbody>
             </table>
+            {found.length === 0 && <div className="small faint" style={{ padding: 16 }}>No metrics match.</div>}
           </div>
         )}
+        <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="metrics" />
       </section>
       {editing && (
         <MetricModal
@@ -407,6 +419,9 @@ export function Measures({ scope, measures, events, reload }: { scope: Scope; me
   const canEdit = useCan("editor");
   const [editing, setEditing] = useState<Measure | "new" | null>(null);
   const [error, setError] = useState("");
+  const [q, setQ] = useState("");
+  const found = measures.filter((m) => matchText(q, m.name, m.key, m.event_name, m.description));
+  const paged = usePaged(found, 25, q);
   return (
     <div className="stack">
       <div className="alert alert-info small">
@@ -417,6 +432,7 @@ export function Measures({ scope, measures, events, reload }: { scope: Scope; me
       <section className="card">
         <div className="card-head">
           <h2>Measures</h2>
+          <input className="input" style={{ maxWidth: 320, flex: 1 }} placeholder="Search measures by name, key or event…" value={q} onChange={(e) => setQ(e.target.value)} />
           {canEdit && (
             <button className="btn btn-primary btn-sm" onClick={() => setEditing("new")}>
               <Icon name="plus" /> New measure
@@ -440,7 +456,7 @@ export function Measures({ scope, measures, events, reload }: { scope: Scope; me
                 </tr>
               </thead>
               <tbody>
-                {measures.map((m) => (
+                {paged.slice.map((m) => (
                   <tr key={m.id}>
                     <td>
                       <div style={{ fontWeight: 600 }}>
@@ -491,8 +507,10 @@ export function Measures({ scope, measures, events, reload }: { scope: Scope; me
                 ))}
               </tbody>
             </table>
+            {found.length === 0 && <div className="small faint" style={{ padding: 16 }}>No measures match.</div>}
           </div>
         )}
+        <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="measures" />
       </section>
       {editing && (
         <MeasureModal
@@ -656,6 +674,11 @@ export function Groups({ scope, groups, metrics, reload }: { scope: Scope; group
   const canEdit = useCan("editor");
   const [editing, setEditing] = useState<MetricGroup | "new" | null>(null);
   const byId = new Map(metrics.map((m) => [m.id, m]));
+  const [q, setQ] = useState("");
+  const found = [...groups]
+    .sort((a, b) => Number(!!b.builtin) - Number(!!a.builtin))
+    .filter((g) => matchText(q, g.name, g.description, ...(g.metric_ids ?? []).map((id) => byId.get(id)?.name ?? "")));
+  const paged = usePaged(found, 12, q);
   return (
     <div className="stack">
       <div className="row-between">
@@ -669,15 +692,14 @@ export function Groups({ scope, groups, metrics, reload }: { scope: Scope; group
           </button>
         )}
       </div>
-      {groups.length === 0 ? (
+      {groups.length > 0 && <input className="input" style={{ maxWidth: 360 }} placeholder="Search groups by name or metric…" value={q} onChange={(e) => setQ(e.target.value)} />}
+      {found.length === 0 ? (
         <div className="card">
-          <Empty title="No metric groups" />
+          <Empty title={groups.length ? "No groups match" : "No metric groups"} />
         </div>
       ) : (
         <div className="grid-3">
-          {[...groups]
-            .sort((a, b) => Number(!!b.builtin) - Number(!!a.builtin))
-            .map((g) => (
+          {paged.slice.map((g) => (
             <div key={g.id} className={`card card-pad stack-sm ${g.builtin ? "group-builtin" : ""}`}>
               <div className="row-between">
                 <h3>
@@ -731,6 +753,11 @@ export function Groups({ scope, groups, metrics, reload }: { scope: Scope; group
               )}
             </div>
           ))}
+        </div>
+      )}
+      {paged.pages > 1 && (
+        <div className="card">
+          <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="groups" />
         </div>
       )}
       {editing && (
