@@ -18,7 +18,9 @@ func (s *Server) SPAHandler() http.Handler {
 	fileServer := http.FileServer(http.FS(sub))
 	index, err := fs.ReadFile(sub, "index.html")
 	if err != nil {
-		panic(err)
+		// The web app isn't built into this binary (e.g. `go run` without
+		// `make web`). The API still works; say how to get the UI.
+		index = []byte(notBuilt)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(r.URL.Path, "/")
@@ -36,3 +38,11 @@ func (s *Server) SPAHandler() http.Handler {
 		_, _ = w.Write(index)
 	})
 }
+
+const notBuilt = `<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Libra</title></head>
+  <body style="font-family: system-ui; padding: 2rem">
+    <p>The Libra web app isn't built into this binary. Run <code>make build</code> (or <code>make web</code>, then rebuild) and restart.</p>
+  </body>
+</html>`
