@@ -42,7 +42,44 @@ type Config struct {
 	AppleTestBase  string
 }
 
+// LoadDotEnv sets variables from a .env file (KEY=VALUE lines, # comments,
+// optional quotes). Variables already set in the environment win, so the
+// real environment can always override the file. A missing file is fine.
+func LoadDotEnv(path string) error {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+			v = v[1 : len(v)-1]
+		}
+		if _, set := os.LookupEnv(k); !set && k != "" {
+			os.Setenv(k, v)
+		}
+	}
+	return nil
+}
+
+// Load reads configuration from the environment, after filling it from the
+// file named by LIBRA_ENV_FILE (default ".env" in the working directory).
 func Load() Config {
+	if err := LoadDotEnv(env("LIBRA_ENV_FILE", ".env")); err != nil {
+		log.Fatalf("read env file: %v", err)
+	}
 	return Config{
 		Addr:        env("LIBRA_ADDR", ":8080"),
 		DatabaseURL: env("LIBRA_DATABASE_URL", "postgres://libra:libra@localhost:5433/libra?sslmode=disable"),
