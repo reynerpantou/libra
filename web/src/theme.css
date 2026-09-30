@@ -409,3 +409,8 @@ pre.code {
 .rollout-bar > div { height: 100%; border-radius: 4px; background: var(--accent); }
 .rollout-bar > span { position: absolute; top: -3px; width: 2px; height: 14px; background: var(--text); }
 .group-builtin { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent), var(--shadow); }
+
+.json-ns { border: 1px dashed var(--border-strong); border-radius: 8px; padding: 6px 8px; background: var(--surface); }
+.json-ns-line { font-family: var(--mono); font-size: 13px; color: var(--text-2); padding: 2px 4px; }
+.json-ns-key { color: var(--accent-text); font-weight: 650; }
+.json-ns-body { padding-left: 18px; }

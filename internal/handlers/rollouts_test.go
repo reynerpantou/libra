@@ -138,6 +138,19 @@ func TestRollouts(t *testing.T) {
 		t.Fatalf("stopped: plan %s", st)
 	}
 
+	// Renaming a platform key moves parameters to the new namespace.
+	_, err = db.Exec(`INSERT INTO variants (experiment_id, key, name, is_control, weight, params, position) VALUES ($1, 'v', 'V', true, 1000, '{"p": {"a": 1}}', 0)`, a)
+	must(err)
+	tx2, err := db.Begin()
+	must(err)
+	must(rewrapParams(ctx, tx2, `b.platform_id = $3`, "p", "shop", pid))
+	must(tx2.Commit())
+	var params string
+	must(db.QueryRow(`SELECT params::text FROM variants WHERE experiment_id = $1`, a).Scan(&params))
+	if params != `{"shop": {"a": 1}}` {
+		t.Errorf("rewrapped params: %s", params)
+	}
+
 	// A launch rolls out 10% → 60% → 100%.
 	c := exp("c", assign.StatusLaunched, 0)
 	_, err = db.Exec(`UPDATE experiments SET launch_rollout = 100, launched_at = now() WHERE id = $1`, c)

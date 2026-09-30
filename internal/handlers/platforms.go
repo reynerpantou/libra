@@ -65,7 +65,7 @@ func (s *Server) loadPlatforms(ctx context.Context, id int64) ([]*Platform, erro
 			return nil, err
 		}
 		if p := by[b.PlatformID]; p != nil {
-			b.PlatformName = p.Name
+			b.PlatformName, b.PlatformKey = p.Name, p.Key
 			p.Businesses = append(p.Businesses, b)
 		}
 	}
@@ -162,16 +162,62 @@ func (s *Server) UpdatePlatform(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "name is required")
 		return
 	}
-	res, err := s.DB.ExecContext(r.Context(), `UPDATE platforms SET name = $2, description = $3 WHERE id = $1`, id, name, strings.TrimSpace(req.Description))
+	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	defer tx.Rollback()
+	var oldKey string
+	if err := tx.QueryRowContext(r.Context(), `SELECT key FROM platforms WHERE id = $1 FOR UPDATE`, id).Scan(&oldKey); err != nil {
 		notFound(w, "platform")
 		return
 	}
+	key := strings.TrimSpace(req.Key)
+	if key == "" {
+		key = oldKey
+	}
+	if !businessKey.MatchString(key) {
+		badRequest(w, "key must be lowercase letters, digits and _ (e.g. tiktok_shop)")
+		return
+	}
+	_, err = tx.ExecContext(r.Context(), `UPDATE platforms SET key = $2, name = $3, description = $4 WHERE id = $1`, id, key, name, strings.TrimSpace(req.Description))
+	if isUniqueViolation(err) {
+		writeError(w, http.StatusConflict, "conflict", "another platform has that key")
+		return
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if key != oldKey {
+		// Parameters are namespaced by the platform key: rename it there too.
+		if err := rewrapParams(r.Context(), tx, `b.platform_id = $3`, oldKey, key, id); err != nil {
+			serverError(w, r, err)
+			return
+		}
+		if err := serving.Bump(r.Context(), tx); err != nil {
+			serverError(w, r, err)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	_ = audit(r.Context(), s.DB, user(r).ID, 0, "platform", id, "update", "", "", map[string]any{"from_key": oldKey, "key": key, "name": name})
+	s.reload(r.Context())
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// rewrapParams moves variant params from under oldKey to under newKey for
+// the experiments matched by where (on businesses b; its argument is $3).
+func rewrapParams(ctx context.Context, tx *sql.Tx, where, oldKey, newKey string, arg any) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE variants v SET params = jsonb_build_object($2::text, v.params -> $1::text)
+		FROM experiments e JOIN businesses b ON b.id = e.business_id
+		WHERE v.experiment_id = e.id AND v.params ? $1::text AND `+where, oldKey, newKey, arg)
+	return err
 }
 
 func createDefaultGroup(ctx context.Context, tx *sql.Tx, platformID int64) error {

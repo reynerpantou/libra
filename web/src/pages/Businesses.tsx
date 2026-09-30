@@ -330,9 +330,15 @@ export function PlatformModal({ platform, onClose, onSaved }: { platform?: Platf
           placeholder="My Shop"
         />
       </Field>
-      <Field label="Key" hint="A short permanent id.">
-        <input className="input input-mono" value={key} disabled={!!platform} onChange={(e) => setKey(e.target.value)} placeholder="shop" />
+      <Field label="Key" hint="Services send it as platform, and every experiment's parameters sit under it: {&quot;key&quot;: {...}}.">
+        <input className="input input-mono" value={key} onChange={(e) => setKey(e.target.value)} placeholder="tiktokshop" />
       </Field>
+      {platform && key !== platform.key && (
+        <div className="alert alert-warn small">
+          Renaming the key moves every experiment's parameters from <code>{platform.key}</code> to <code>{key || "…"}</code>, and services must send
+          the new key as <code>platform</code>. Update them at the same time.
+        </div>
+      )}
       <Field label="Description">
         <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} />
       </Field>

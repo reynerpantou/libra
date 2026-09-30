@@ -511,6 +511,13 @@ func (s *Server) checkRefs(ctx context.Context, req *experimentRequest, self int
 			return "every metric group must exist and appear once"
 		}
 	}
+	var platformKey string
+	if err := s.DB.QueryRowContext(ctx, `SELECT p.key FROM businesses b JOIN platforms p ON p.id = b.platform_id WHERE b.id = $1`, req.BusinessID).Scan(&platformKey); err != nil {
+		return "could not check the business's platform"
+	}
+	if msg := namespaceParams(platformKey, req.Variants); msg != "" {
+		return msg
+	}
 	if req.OwnerID != nil {
 		if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE id = $1`, *req.OwnerID).Scan(&n); n == 0 {
 			return "that owner doesn't exist"
@@ -1211,4 +1218,22 @@ func createAutoLayer(ctx context.Context, tx *sql.Tx, diversion string) (int64, 
 	err = tx.QueryRowContext(ctx, `INSERT INTO layers (name, description, salt, diversion, auto) VALUES ($1, $2, $3, $4, true) RETURNING id`,
 		"auto-new-"+salt[:10], "Dedicated layer of one experiment", salt[:16], diversion).Scan(&id)
 	return id, err
+}
+
+// namespaceParams keeps each platform's parameters apart: a variant's
+// params are one object under the platform key, e.g. {"tiktokshop": {...}},
+// so experiments of different platforms never write the same field. Empty
+// params get the wrapper.
+func namespaceParams(platformKey string, vs []VariantIn) string {
+	for i := range vs {
+		p := vs[i].Params
+		if len(p) == 0 {
+			vs[i].Params = map[string]any{platformKey: map[string]any{}}
+			continue
+		}
+		if _, ok := p[platformKey].(map[string]any); len(p) != 1 || !ok {
+			return fmt.Sprintf(`variant %s: parameters go inside the platform key, like {"%s": {...}}`, vs[i].Key, platformKey)
+		}
+	}
+	return ""
 }
