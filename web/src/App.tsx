@@ -13,6 +13,8 @@ import Layers from "./pages/Layers";
 import Login, { SignInLink } from "./pages/Login";
 import Setup from "./pages/Setup";
 import Pipeline from "./pages/Pipeline";
+import PlatformDetail from "./pages/PlatformDetail";
+import Parameters from "./pages/Parameters";
 import Settings from "./pages/Settings";
 import Tools from "./pages/Tools";
 
@@ -43,6 +45,8 @@ export default function App() {
         <Route path="/experiments/:id/edit" element={<ExperimentForm />} />
         <Route path="/businesses" element={<Businesses />} />
         <Route path="/businesses/:id" element={<BusinessDetail />} />
+        <Route path="/platforms/:pid" element={<PlatformDetail />} />
+        <Route path="/parameters" element={<Parameters />} />
         <Route path="/layers" element={<Layers />} />
         <Route path="/attributes" element={<Attributes />} />
         <Route path="/tools" element={<Tools />} />

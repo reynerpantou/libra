@@ -5,7 +5,8 @@ import { ago, fmtInt, fmtP, fmtPct, fmtValue } from "../lib/format";
 import { useAsync } from "../lib/hooks";
 import type { Comparison, Experiment, MetricResult, Report, ReportVariant } from "../lib/types";
 import { LineChart } from "./LineChart";
-import { Empty, ErrorBox, Field, Loading, Segmented, Stat, seriesColor } from "./ui";
+import { GroupPicker } from "./GroupPicker";
+import { Empty, ErrorBox, Field, Loading, Popover, Segmented, Stat, seriesColor } from "./ui";
 
 const verdictText: Record<Comparison["verdict"], string> = {
   better: "Better",
@@ -22,28 +23,46 @@ const verdictClass: Record<Comparison["verdict"], string> = {
   untestable: "",
 };
 
+type Layout = "detailed" | "matrix";
+
 export default function ReportView({ experiment: e }: { experiment: Experiment }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
-  const [groupId, setGroupId] = useState<string>(e.metric_group_id ? String(e.metric_group_id) : "");
+  // Metric selection: the experiment's own groups (with defaults), a custom
+  // set of groups, or every metric the business can see.
+  const [pick, setPick] = useState<{ kind: "experiment" } | { kind: "groups"; ids: number[] } | { kind: "all" }>({ kind: "experiment" });
+  const [picker, setPicker] = useState<HTMLElement | null>(null);
   const [dimension, setDimension] = useState("");
   const [alpha, setAlpha] = useState("0.05");
   const [selected, setSelected] = useState<number | null>(null);
-  const groups = useAsync(() => api.groups(e.business_id), [e.business_id]);
-  const group = groups.data?.find((g) => String(g.id) === groupId);
-  const metricsParam = groupId === "" ? "all" : group ? group.metric_ids.join(",") : "";
+  const [hidden, setHidden] = useState<Set<number>>(new Set());
+  const [layout, setLayout] = useState<Layout | null>(null);
+  const refs = useAsync(async () => {
+    const [groups, metrics, business] = await Promise.all([api.allGroups(), api.allMetrics(), api.business(e.business_id)]);
+    return { groups, metrics, business };
+  }, [e.business_id]);
 
+  const pickKey = pick.kind === "groups" ? pick.ids.join(",") : pick.kind;
   const rep = useAsync(async () => {
-    if (groupId !== "" && !group) return null; // wait for groups
-    const metrics = metricsParam === "all" ? (await api.metrics(e.business_id)).map((m) => m.id).join(",") : metricsParam;
-    return api.report(e.id, { from, to, metrics, dimension, alpha });
-  }, [e.id, from, to, metricsParam, dimension, alpha, e.updated_at]);
+    if (pick.kind === "all") {
+      const metrics = (await api.metrics({ kind: "business", id: e.business_id })).map((m) => m.id).join(",");
+      return api.report(e.id, { from, to, metrics, dimension, alpha });
+    }
+    return api.report(e.id, { from, to, groups: pick.kind === "groups" ? pick.ids.join(",") || "0" : undefined, dimension, alpha });
+  }, [e.id, from, to, pickKey, dimension, alpha, e.updated_at]);
 
   const r = rep.data;
   useEffect(() => {
     if (r && !from) setFrom(r.from);
     if (r && !to) setTo(r.to);
   }, [r, from, to]);
+
+  const control = r ? r.variants.find((v) => v.is_control) ?? r.variants[0] : undefined;
+  const treatments = r && control ? r.variants.filter((v) => v.id !== control.id) : [];
+  const shown = treatments.filter((v) => !hidden.has(v.id));
+  const lay: Layout = layout ?? (treatments.length > 3 ? "matrix" : "detailed");
+  const groupLabel =
+    pick.kind === "all" ? "All business metrics" : pick.kind === "groups" ? `${pick.ids.length} group${pick.ids.length === 1 ? "" : "s"} (custom)` : "Experiment's groups";
 
   return (
     <div className="stack">
@@ -56,14 +75,9 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
             <input className="input" type="date" value={to} onChange={(x) => setTo(x.target.value)} />
           </Field>
           <Field label="Metrics">
-            <select className="input" value={groupId} onChange={(x) => setGroupId(x.target.value)}>
-              <option value="">All metrics</option>
-              {groups.data?.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
+            <button className="input" style={{ textAlign: "left", minWidth: 200, cursor: "pointer" }} onClick={(x) => setPicker(picker ? null : x.currentTarget)}>
+              {groupLabel} ▾
+            </button>
           </Field>
           <Field label="Break down by">
             <select className="input" value={dimension} onChange={(x) => setDimension(x.target.value)}>
@@ -91,7 +105,70 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
             Edit metrics & formulas
           </Link>
         </div>
+        {treatments.length > 1 && (
+          <div className="row" style={{ marginTop: 12, gap: 6 }}>
+            <span className="small faint">Compare with {control?.name || control?.key}:</span>
+            {treatments.map((v) => {
+              const i = r!.variants.findIndex((x) => x.id === v.id);
+              const on = !hidden.has(v.id);
+              return (
+                <button
+                  key={v.id}
+                  className={`vchip ${on ? "on" : ""}`}
+                  onClick={() => {
+                    const next = new Set(hidden);
+                    if (on) next.add(v.id);
+                    else next.delete(v.id);
+                    if (next.size < treatments.length) setHidden(next);
+                  }}
+                >
+                  <span className="dot" style={{ background: seriesColor(i) }} />
+                  {v.name || v.key}
+                </button>
+              );
+            })}
+            {hidden.size > 0 && (
+              <button className="btn btn-ghost btn-sm" onClick={() => setHidden(new Set())}>
+                Show all
+              </button>
+            )}
+            <span className="spacer" />
+            <Segmented<Layout>
+              options={[
+                ["matrix", "Compact"],
+                ["detailed", "Detailed"],
+              ]}
+              value={lay}
+              onChange={setLayout}
+            />
+          </div>
+        )}
       </div>
+      {picker && refs.data && (
+        <Popover anchor={picker} onClose={() => setPicker(null)} width={720}>
+          <div className="stack-sm">
+            <div className="row-between">
+              <b>Metrics in this report</b>
+              <div className="row" style={{ gap: 6 }}>
+                <button className={`btn btn-sm ${pick.kind === "experiment" ? "btn-primary" : ""}`} onClick={() => setPick({ kind: "experiment" })}>
+                  Experiment's groups
+                </button>
+                <button className={`btn btn-sm ${pick.kind === "all" ? "btn-primary" : ""}`} onClick={() => setPick({ kind: "all" })}>
+                  All business metrics
+                </button>
+              </div>
+            </div>
+            <GroupPicker
+              groups={refs.data.groups}
+              metrics={refs.data.metrics}
+              value={pick.kind === "groups" ? pick.ids : pick.kind === "experiment" ? (r?.groups ?? []).map((g) => g.id).filter(Boolean) : []}
+              onChange={(ids) => setPick({ kind: "groups", ids })}
+              businessId={-1}
+              platformId={-1}
+            />
+          </div>
+        </Popover>
+      )}
 
       <ErrorBox error={rep.error} />
       {rep.loading && !r ? (
@@ -118,7 +195,30 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
                   </p>
                 </div>
               </div>
-              <MetricTable metrics={seg.metrics} variants={r.variants} selected={r.dimension ? null : selected} onSelect={setSelected} />
+              {r.groups.map((g) => {
+                const byId = new Map(seg.metrics.map((m) => [m.metric_id, m]));
+                const ms = g.metric_ids.map((id) => byId.get(id)).filter((m): m is MetricResult => !!m);
+                return (
+                  <div key={`${g.id}-${g.name}`} className="rep-group">
+                    {(r.groups.length > 1 || g.id !== 0) && (
+                      <div className="rep-group-head">
+                        <b>{g.name}</b> <span className="faint small">{g.owner}</span>{" "}
+                        {g.is_default && (
+                          <span className="badge b-good" title="A default group: included in every experiment of its business or platform">
+                            default
+                          </span>
+                        )}
+                        <span className="faint small"> · {ms.length} metrics</span>
+                      </div>
+                    )}
+                    {lay === "matrix" && control ? (
+                      <MetricMatrix metrics={ms} control={control} treatments={shown} all={r.variants} selected={r.dimension ? null : selected} onSelect={setSelected} />
+                    ) : (
+                      <MetricTable metrics={ms} variants={r.variants.filter((v) => !hidden.has(v.id))} selected={r.dimension ? null : selected} onSelect={setSelected} />
+                    )}
+                  </div>
+                );
+              })}
             </section>
           ))}
           {r.segments_not_shown ? <p className="faint small">{r.segments_not_shown} smaller segments not shown.</p> : null}
@@ -126,7 +226,7 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
             <Trend
               experimentId={e.id}
               metric={r.segments[0].metrics.find((m) => m.metric_id === selected)}
-              variants={r.variants}
+              variants={r.variants.filter((v) => !hidden.has(v.id))}
               from={r.from}
               to={r.to}
               alpha={alpha}
@@ -138,9 +238,12 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
   );
 }
 
+// Summary shows the split. With a handful of variants it's tiles; beyond
+// that a compact table that stays readable at any count.
 function Summary({ r }: { r: Report }) {
   const total = r.variants.reduce((s, v) => s + v.units, 0);
   const wsum = r.variants.reduce((s, v) => s + v.weight, 0);
+  const many = r.variants.length > 3;
   return (
     <>
       {r.srm.suspect ? (
@@ -153,22 +256,152 @@ function Summary({ r }: { r: Report }) {
           Traffic split matches the configured weights (sample ratio check p = {fmtP(r.srm.p_value)}).
         </div>
       )}
-      <div className="grid-4">
-        {r.variants.map((v, i) => (
+      {many ? (
+        <section className="card">
+          <div className="card-head">
+            <div>
+              <h2>Units per variant</h2>
+              <p>
+                {fmtInt(total)} units in {r.variants.length} variants · data {r.data_through ? ago(r.data_through) : "never processed"}
+                {r.excluded_multi_variant_units > 0 && ` · ${fmtInt(r.excluded_multi_variant_units)} units excluded (saw 2+ variants)`}
+              </p>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table className="tbl tbl-compact">
+              <thead>
+                <tr>
+                  <th>Variant</th>
+                  <th className="num">Units</th>
+                  <th className="num">Share</th>
+                  <th className="num">Expected</th>
+                  <th style={{ width: "40%" }}>Split</th>
+                </tr>
+              </thead>
+              <tbody>
+                {r.variants.map((v, i) => {
+                  const share = total ? v.units / total : 0;
+                  const exp = v.weight / wsum;
+                  return (
+                    <tr key={v.id}>
+                      <td className="nowrap">
+                        <span className="dot" style={{ background: seriesColor(i), marginRight: 8 }} />
+                        {v.name || v.key} {v.is_control && <span className="badge">control</span>}
+                      </td>
+                      <td className="num">{fmtInt(v.units)}</td>
+                      <td className="num">{(share * 100).toFixed(1)}%</td>
+                      <td className="num faint">{(exp * 100).toFixed(1)}%</td>
+                      <td>
+                        <div className="split-bar" title={`${(share * 100).toFixed(2)}% of units, expected ${(exp * 100).toFixed(2)}%`}>
+                          <div style={{ width: `${Math.min(100, (share / Math.max(exp, share, 1e-9)) * 100)}%`, background: seriesColor(i) }} />
+                          <span className="mark" style={{ left: `${Math.min(100, (exp / Math.max(exp, share, 1e-9)) * 100)}%` }} />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : (
+        <div className="grid-4">
+          {r.variants.map((v, i) => (
+            <Stat
+              key={v.id}
+              label={`${v.name || v.key}${v.is_control ? " · control" : ""}`}
+              value={<span style={{ color: seriesColor(i) }}>{fmtInt(v.units)}</span>}
+              sub={`${total ? ((v.units / total) * 100).toFixed(1) : "0"}% of units · expected ${((v.weight / wsum) * 100).toFixed(1)}%`}
+            />
+          ))}
           <Stat
-            key={v.id}
-            label={`${v.name || v.key}${v.is_control ? " · control" : ""}`}
-            value={<span style={{ color: seriesColor(i) }}>{fmtInt(v.units)}</span>}
-            sub={`${total ? ((v.units / total) * 100).toFixed(1) : "0"}% of units · expected ${((v.weight / wsum) * 100).toFixed(1)}%`}
+            label="Data freshness"
+            value={<span style={{ fontSize: 16 }}>{r.data_through ? ago(r.data_through) : "never"}</span>}
+            sub={r.excluded_multi_variant_units > 0 ? `${fmtInt(r.excluded_multi_variant_units)} units excluded (saw 2+ variants)` : "last pipeline run"}
           />
-        ))}
-        <Stat
-          label="Data freshness"
-          value={<span style={{ fontSize: 16 }}>{r.data_through ? ago(r.data_through) : "never"}</span>}
-          sub={r.excluded_multi_variant_units > 0 ? `${fmtInt(r.excluded_multi_variant_units)} units excluded (saw 2+ variants)` : "last pipeline run"}
-        />
-      </div>
+        </div>
+      )}
     </>
+  );
+}
+
+// MetricMatrix: metrics down, variants across, each cell the lift vs
+// control colored by verdict. Scales to many variants (scrolls sideways
+// with the metric column pinned).
+function MetricMatrix({
+  metrics,
+  control,
+  treatments,
+  all,
+  selected,
+  onSelect,
+}: {
+  metrics: MetricResult[];
+  control: ReportVariant;
+  treatments: ReportVariant[];
+  all: ReportVariant[];
+  selected: number | null;
+  onSelect: (id: number) => void;
+}) {
+  if (metrics.length === 0) return <Empty title="No metrics in this group" />;
+  return (
+    <div className="table-wrap">
+      <table className="tbl rep-matrix">
+        <thead>
+          <tr>
+            <th className="sticky-col">Metric</th>
+            <th className="num">{control.name || control.key}</th>
+            {treatments.map((t) => (
+              <th key={t.id} className="num" title={t.key}>
+                <span className="dot" style={{ background: seriesColor(all.findIndex((x) => x.id === t.id)), marginRight: 6 }} />
+                {t.name || t.key}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {metrics.map((m) => {
+            const cv = m.values.find((v) => v.variant_id === control.id);
+            return (
+              <tr
+                key={m.metric_id}
+                className="clickable"
+                style={selected === m.metric_id ? { background: "var(--accent-soft)" } : undefined}
+                onClick={() => onSelect(m.metric_id)}
+              >
+                <td className="sticky-col">
+                  <div className="metric-name">{m.name}</div>
+                  <div className="metric-formula" title={m.expanded}>
+                    {m.formula}
+                  </div>
+                </td>
+                <td className="num">{m.error ? <span className="badge b-bad">error</span> : <Val m={m} v={cv} />}</td>
+                {treatments.map((t) => {
+                  const c = m.comparisons.find((x) => x.variant_id === t.id);
+                  const tv = m.values.find((v) => v.variant_id === t.id);
+                  if (m.error || !c) return <td key={t.id} className="num faint">—</td>;
+                  return (
+                    <td
+                      key={t.id}
+                      className={`num cell-${c.verdict}`}
+                      title={`${t.name || t.key}: ${fmtValue(tv?.value ?? null, m.format, m.decimals)} · ${fmtPct(c.rel_ci_low, 1)} to ${fmtPct(
+                        c.rel_ci_high,
+                        1
+                      )} · p ${fmtP(c.p_value)} · ${verdictText[c.verdict]}`}
+                    >
+                      <div className="lift">{fmtPct(c.rel_diff)}</div>
+                      <div className="small faint nowrap">
+                        {fmtPct(c.rel_ci_low, 1)} … {fmtPct(c.rel_ci_high, 1)}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

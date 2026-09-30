@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { ParamUse } from "../lib/types";
-import { StatusBadge } from "./ui";
+import { Icon, StatusBadge } from "./ui";
 
 export type Usage = Record<string, ParamUse[]>;
 
@@ -19,7 +19,7 @@ export function ParamTree({
   value: Record<string, unknown>;
   usage: Usage | null;
   selected: string;
-  onSelect: (path: string) => void;
+  onSelect: (path: string, anchor: HTMLElement) => void;
 }) {
   const keyButton = (path: string, key: string) => {
     const uses = usage?.[path];
@@ -32,7 +32,7 @@ export function ParamTree({
       ? `Can conflict with ${uses.filter((u) => u.conflict).length} experiment(s) — click for details`
       : `Also used by ${uses.length} experiment(s), no conflict — click for details`;
     return (
-      <button type="button" className={cls} title={title} onClick={() => onSelect(path)}>
+      <button type="button" className={cls} title={title} onClick={(e) => onSelect(path, e.currentTarget)}>
         "{key}"
       </button>
     );
@@ -77,68 +77,65 @@ const relationText: Record<ParamUse["relation"], string> = {
   shares_parent: "sets other fields under the same parent only",
 };
 
-// UsagePanel explains, for the selected field, who else uses it and who wins.
-export function UsagePanel({ path, uses, rules }: { path: string; uses: ParamUse[]; rules: string[] }) {
+// UsagePanel explains, for the selected field, who else uses it and who
+// wins. It's compact: it lives in a popover next to the clicked key.
+export function UsagePanel({ path, uses, rules, onClose }: { path: string; uses: ParamUse[]; rules: string[]; onClose?: () => void }) {
   const conflicts = uses.filter((u) => u.conflict);
+  // Conflicts first, then the rest.
+  const sorted = [...uses].sort((a, b) => Number(b.conflict) - Number(a.conflict));
   return (
-    <div className="stack">
-      <div className="row-between">
-        <div>
-          <div className="faint small">Selected field</div>
-          <div className="mono" style={{ fontSize: 14 }}>
+    <div className="stack-sm">
+      <div className="row-between" style={{ alignItems: "flex-start" }}>
+        <div style={{ minWidth: 0 }}>
+          <div className="faint small">Field</div>
+          <div className="mono" style={{ fontSize: 13.5, wordBreak: "break-all" }}>
             {path}
           </div>
         </div>
-        {uses.length === 0 ? (
-          <span className="badge b-good">Only this experiment</span>
-        ) : conflicts.length ? (
-          <span className="badge b-warn">Can conflict with {conflicts.length}</span>
-        ) : (
-          <span className="badge">Shared, no conflict</span>
-        )}
+        <div className="row" style={{ gap: 4, flexShrink: 0 }}>
+          {uses.length === 0 ? (
+            <span className="badge b-good">Only this experiment</span>
+          ) : conflicts.length ? (
+            <span className="badge b-warn">Can conflict with {conflicts.length}</span>
+          ) : (
+            <span className="badge">Shared, no conflict</span>
+          )}
+          {onClose && (
+            <button className="icon-btn" aria-label="Close" onClick={onClose}>
+              <Icon name="x" size={14} />
+            </button>
+          )}
+        </div>
       </div>
       {uses.length === 0 ? (
         <p className="muted small">No other experiment that can serve (draft through launched) sets this field or anything above or below it.</p>
       ) : (
-        <div className="table-wrap">
-          <table className="tbl tbl-compact">
-            <thead>
-              <tr>
-                <th>Experiment</th>
-                <th>How it overlaps</th>
-                <th>Outcome</th>
-              </tr>
-            </thead>
-            <tbody>
-              {uses.map((u) => (
-                <tr key={u.experiment_id}>
-                  <td style={{ minWidth: 200 }}>
-                    <Link to={`/experiments/${u.experiment_id}?tab=overview`}>{u.experiment}</Link>
-                    <div className="row small faint" style={{ gap: 6, marginTop: 2 }}>
-                      <StatusBadge status={u.status} /> layer {u.layer}
-                      {u.same_layer && <span className="badge">same layer</span>}
-                    </div>
-                  </td>
-                  <td className="small">
-                    {relationText[u.relation]}
-                    <div className="mono faint">{u.their_paths.join(", ")}</div>
-                    {u.variants.length > 0 && <div className="faint">variants: {u.variants.join(", ")}</div>}
-                  </td>
-                  <td className="small" style={{ minWidth: 260 }}>
-                    {u.conflict ? (
-                      <span className={`badge ${u.winner === "this" ? "b-good" : "b-warn"}`}>{u.winner === "this" ? "Conflict — this experiment wins" : "Conflict — the other wins"}</span>
-                    ) : (
-                      <span className="badge">No conflict</span>
-                    )}
-                    <div className="muted" style={{ marginTop: 4 }}>
-                      {u.reason}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        sorted.map((u) => (
+          <div key={u.experiment_id} className={`use-item ${u.conflict ? "conflict" : ""}`}>
+            <div className="row-between" style={{ gap: 6 }}>
+              <Link to={`/experiments/${u.experiment_id}?tab=overview`} style={{ fontWeight: 600 }}>
+                {u.experiment}
+              </Link>
+              <StatusBadge status={u.status} />
+            </div>
+            <div className="small faint">
+              layer {u.layer}
+              {u.same_layer && " (same layer — never both for one unit)"} · {relationText[u.relation]}
+            </div>
+            <div className="mono small faint" style={{ wordBreak: "break-all" }}>
+              {u.their_paths.join(", ")}
+              {u.variants.length > 0 && <span> · variants {u.variants.join(", ")}</span>}
+            </div>
+            <div className="small">
+              {u.conflict ? (
+                <b style={{ color: u.winner === "this" ? "var(--good)" : "var(--warn)" }}>{u.winner === "this" ? "This experiment wins. " : "The other wins. "}</b>
+              ) : (
+                <b>No conflict. </b>
+              )}
+              <span className="muted">{u.reason}</span>
+            </div>
+          </div>
+        ))
       )}
       <details>
         <summary className="small" style={{ cursor: "pointer" }}>

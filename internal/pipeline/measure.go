@@ -30,7 +30,8 @@ var Aggregations = []string{"count", "sum", "max", "any"}
 // Measure turns raw events into one number per unit per day.
 type Measure struct {
 	ID          int64    `json:"id"`
-	BusinessID  int64    `json:"business_id"`
+	BusinessID  int64    `json:"business_id,omitempty"` // set for business measures
+	PlatformID  int64    `json:"platform_id,omitempty"` // set for platform measures (all its businesses' events)
 	Key         string   `json:"key"`
 	Name        string   `json:"name"`
 	Description string   `json:"description"`

@@ -46,7 +46,8 @@ const (
 	SourceLaunch    = "launch"
 )
 
-// Diversion is which id a layer randomizes on.
+// Diversion is which id a layer randomizes on. user_id and device_id are
+// built in; others (managed in the app) arrive in Request.IDs.
 const (
 	DiversionUser   = "user_id"
 	DiversionDevice = "device_id"
@@ -136,7 +137,8 @@ type Layer struct {
 	ID        int64
 	Name      string
 	Salt      string
-	Diversion string // user_id | device_id
+	Diversion string // a diversions key: user_id, device_id, …
+	Auto      bool   // dedicated to one experiment
 	owner     [Buckets]*Experiment
 }
 
@@ -198,22 +200,30 @@ func PickVariant(vs []Variant, bucket int) *Variant {
 // Request is what a caller knows about the unit. Each layer uses the id of
 // its diversion type; UnitID is the older name for UserID.
 type Request struct {
-	UserID   string         `json:"user_id,omitempty"`
-	DeviceID string         `json:"device_id,omitempty"`
-	UnitID   string         `json:"unit_id,omitempty"`
-	Business string         `json:"business,omitempty"` // only this business's experiments; empty = all
-	Attrs    map[string]any `json:"attrs,omitempty"`
+	UserID   string            `json:"user_id,omitempty"`
+	DeviceID string            `json:"device_id,omitempty"`
+	IDs      map[string]string `json:"ids,omitempty"` // other diversions, e.g. {"shop_id": "s-1"}
+	UnitID   string            `json:"unit_id,omitempty"`
+	Business string            `json:"business,omitempty"` // only this business's experiments; empty = all
+	Attrs    map[string]any    `json:"attrs,omitempty"`
 }
 
 // ID returns the request's id for a diversion type.
 func (r Request) ID(diversion string) string {
-	if diversion == DiversionDevice {
-		return r.DeviceID
+	switch diversion {
+	case DiversionDevice:
+		if r.DeviceID != "" {
+			return r.DeviceID
+		}
+	case DiversionUser, "":
+		if r.UserID != "" {
+			return r.UserID
+		}
+		if r.UnitID != "" {
+			return r.UnitID
+		}
 	}
-	if r.UserID != "" {
-		return r.UserID
-	}
-	return r.UnitID
+	return r.IDs[diversion]
 }
 
 // Hit is one experiment the unit is in.
@@ -749,5 +759,12 @@ func ParamPaths(params map[string]any) []string {
 		out = append(out, p)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// FlattenParams maps each leaf dot path of a params object to its value.
+func FlattenParams(params map[string]any) map[string]any {
+	out := map[string]any{}
+	flatten("", params, out)
 	return out
 }

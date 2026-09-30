@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ErrorBox, Field, Loading, StatusBadge, Tabs } from "../components/ui";
 import { api } from "../lib/api";
+import { useDiversions } from "../lib/diversions";
 import { useAsync, useDebounced } from "../lib/hooks";
 import type { Hit, Step } from "../lib/types";
 
@@ -40,8 +41,8 @@ export default function Tools() {
 }
 
 function Diagnose() {
-  const [unit, setUnit] = useState("");
-  const [device, setDevice] = useState("");
+  const diversions = useDiversions();
+  const [ids, setIds] = useState<Record<string, string>>({});
   const [business, setBusiness] = useState("");
   const [attrs, setAttrs] = useState('{\n  "region": "ID",\n  "os": "android"\n}');
   const [error, setError] = useState("");
@@ -59,7 +60,7 @@ function Diagnose() {
     }
     setBusy(true);
     try {
-      const r = await api.diagnose(unit, device, business, parsed);
+      const r = await api.diagnose(ids, business, parsed);
       setRes({ version: r.snapshot_version, ...r.result, trace: r.result.trace ?? [] });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -70,12 +71,16 @@ function Diagnose() {
   return (
     <div className="grid-2" style={{ gridTemplateColumns: "minmax(0, 360px) minmax(0, 1fr)", alignItems: "start" }}>
       <section className="card card-pad stack">
-        <Field label="User id" hint="Used by layers that split by user.">
-          <input className="input input-mono" value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="demo-search-000042" />
-        </Field>
-        <Field label="Device id" hint="Used by layers that split by device.">
-          <input className="input input-mono" value={device} onChange={(e) => setDevice(e.target.value)} placeholder="dev-search-000042" />
-        </Field>
+        {diversions.map((d) => (
+          <Field key={d.key} label={d.name} hint={`Used by layers that split by ${d.key}.`}>
+            <input
+              className="input input-mono"
+              value={ids[d.key] ?? ""}
+              onChange={(e) => setIds({ ...ids, [d.key]: e.target.value })}
+              placeholder={d.key === "user_id" ? "demo-search-000042" : d.key === "device_id" ? "dev-search-000042" : d.key}
+            />
+          </Field>
+        ))}
         <Field label="Business">
           <select className="input" value={business} onChange={(e) => setBusiness(e.target.value)}>
             <option value="">All</option>
@@ -91,7 +96,7 @@ function Diagnose() {
         </Field>
         <ErrorBox error={error} />
         <div>
-          <button className="btn btn-primary" disabled={(!unit.trim() && !device.trim()) || busy} onClick={run}>
+          <button className="btn btn-primary" disabled={!Object.values(ids).some((v) => v.trim()) || busy} onClick={run}>
             Diagnose
           </button>
         </div>

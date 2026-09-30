@@ -13,6 +13,8 @@ export interface User {
 
 export interface Business {
   id: number;
+  platform_id: number;
+  platform_name: string;
   key: string;
   name: string;
   description: string;
@@ -23,6 +25,24 @@ export interface Business {
   experiments: number;
 }
 
+export interface Platform {
+  id: number;
+  key: string;
+  name: string;
+  description: string;
+  created_at: string;
+  measures: number;
+  metrics: number;
+  metric_groups: number;
+  businesses: Business[];
+}
+
+// Where definitions live: a business or a platform (shared by its businesses).
+export interface Scope {
+  kind: "business" | "platform";
+  id: number;
+}
+
 export interface Filter {
   field: string;
   op: string;
@@ -31,7 +51,9 @@ export interface Filter {
 
 export interface Measure {
   id: number;
-  business_id: number;
+  business_id?: number;
+  platform_id?: number;
+  inherited?: boolean;
   key: string;
   name: string;
   description: string;
@@ -50,7 +72,9 @@ export type Direction = "increase" | "decrease" | "neutral";
 
 export interface Metric {
   id: number;
-  business_id: number;
+  business_id?: number;
+  platform_id?: number;
+  inherited?: boolean;
   key: string;
   name: string;
   description: string;
@@ -66,10 +90,41 @@ export interface Metric {
 
 export interface MetricGroup {
   id: number;
-  business_id: number;
+  business_id?: number;
+  platform_id?: number;
+  owner: string;
+  owner_kind: "business" | "platform";
+  platform: string;
   name: string;
   description: string;
+  is_default: boolean;
   metric_ids: number[];
+  inherited?: boolean;
+}
+
+export interface MetricBrief {
+  id: number;
+  key: string;
+  name: string;
+  format: Format;
+  owner: string;
+}
+
+export interface ParamValue {
+  path: string;
+  value: unknown;
+  experiment_id: number;
+  experiment: string;
+  business: string;
+  status: Status;
+  variant_key: string;
+  variant_name: string;
+  is_control: boolean;
+  layer: string;
+  layer_auto: boolean;
+  diversion: string;
+  traffic: number;
+  default: boolean;
 }
 
 export interface Rule {
@@ -83,7 +138,17 @@ export interface Targeting {
   groups: Rule[][];
 }
 
-export type Diversion = "user_id" | "device_id";
+// A diversions key: user_id, device_id, or one an admin added.
+export type Diversion = string;
+
+export interface DiversionDef {
+  key: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+  layers: number;
+  created_at: string;
+}
 
 export type AttrType = "string" | "number" | "version" | "boolean";
 
@@ -155,7 +220,8 @@ export interface Experiment {
   traffic_held: number;
   targeting: Targeting;
   layer_diversion: Diversion;
-  metric_group_id: number | null;
+  layer_auto: boolean;
+  metric_group_ids: number[];
   review_note: string;
   reviewer_name: string;
   launched_variant_id: number | null;
@@ -239,7 +305,15 @@ export interface Report {
   data_through?: string;
   computed_at: string;
   segments_not_shown?: number;
-  metric_group_id?: number;
+  groups: ReportGroup[];
+}
+
+export interface ReportGroup {
+  id: number;
+  name: string;
+  owner: string;
+  is_default: boolean;
+  metric_ids: number[];
 }
 
 export interface TrendPoint {

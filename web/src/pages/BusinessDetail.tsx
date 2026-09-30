@@ -6,7 +6,7 @@ import { api, type MeasureInput, type MetricInput } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { fmtDateTime, fmtInt, fmtValue } from "../lib/format";
 import { useAsync, useDebounced } from "../lib/hooks";
-import type { Business, EventSummary, Filter, Measure, Metric, MetricGroup } from "../lib/types";
+import type { Business, EventSummary, Filter, Measure, Metric, MetricGroup, Scope } from "../lib/types";
 import { slug } from "./Businesses";
 
 type Tab = "metrics" | "measures" | "groups" | "data" | "settings";
@@ -15,10 +15,11 @@ export default function BusinessDetail() {
   const id = Number(useParams().id);
   const [params, setParams] = useSearchParams();
   const tab = (params.get("tab") as Tab) || "metrics";
+  const scope: Scope = useMemo(() => ({ kind: "business", id }), [id]);
   const biz = useAsync(() => api.business(id), [id]);
-  const measures = useAsync(() => api.measures(id), [id]);
-  const metrics = useAsync(() => api.metrics(id), [id]);
-  const groups = useAsync(() => api.groups(id), [id]);
+  const measures = useAsync(() => api.measures(scope), [scope]);
+  const metrics = useAsync(() => api.metrics(scope), [scope]);
+  const groups = useAsync(() => api.groups(scope), [scope]);
   const events = useAsync(() => api.eventSummary(id), [id]);
   const isAdmin = useCan("admin");
   const b = biz.data;
@@ -32,13 +33,17 @@ export default function BusinessDetail() {
   return (
     <div className="page">
       <div className="crumbs">
-        <Link to="/businesses">Businesses</Link> / {b.key}
+        <Link to="/businesses">Businesses</Link> / <Link to={`/platforms/${b.platform_id}`}>{b.platform_name}</Link> / {b.key}
       </div>
       <div className="page-head">
         <div>
           <div className="row">
             <h1>{b.name}</h1>
             <span className="chip">{b.key}</span>
+            <span className="chip" title="Business id">id {b.id}</span>
+            <Link className="chip" to={`/platforms/${b.platform_id}`} title="Platform: its measures, metrics and default groups apply here too">
+              {b.platform_name}
+            </Link>
           </div>
           <p>{b.description}</p>
         </div>
@@ -57,9 +62,9 @@ export default function BusinessDetail() {
         value={tab}
         onChange={(t) => setParams({ tab: t }, { replace: true })}
       />
-      {tab === "metrics" && <Metrics business={b} metrics={metrics.data ?? []} measures={measures.data ?? []} reload={reloadDefs} />}
-      {tab === "measures" && <Measures business={b} measures={measures.data ?? []} events={events.data} reload={reloadDefs} />}
-      {tab === "groups" && <Groups business={b} groups={groups.data ?? []} metrics={metrics.data ?? []} reload={groups.reload} />}
+      {tab === "metrics" && <Metrics scope={scope} metrics={metrics.data ?? []} measures={measures.data ?? []} reload={reloadDefs} />}
+      {tab === "measures" && <Measures scope={scope} measures={measures.data ?? []} events={events.data} reload={reloadDefs} />}
+      {tab === "groups" && <Groups scope={scope} groups={groups.data ?? []} metrics={metrics.data ?? []} reload={groups.reload} />}
       {tab === "data" && <Data business={b} events={events.data} />}
       {tab === "settings" && <Settings business={b} onSaved={(x) => biz.setData(x)} />}
     </div>
@@ -68,13 +73,22 @@ export default function BusinessDetail() {
 
 // ---------- metrics ----------
 
+// Inherited: defined on the platform, shown read-only in a business.
+function PlatformBadge({ on }: { on?: boolean }) {
+  return on ? (
+    <span className="badge b-accent" title="Defined on the platform; shared by every business under it. Edit it on the platform page.">
+      platform
+    </span>
+  ) : null;
+}
+
 const kindHelp: Record<string, string> = {
   ratio: "Ratio metric — compared directly between variants (e.g. CTR, GMV per user).",
   total: "Total metric — variants differ in size, so the report shows totals and compares them per exposed unit.",
   mixed: "Mixed scale — compared per exposed unit. Consider rewriting as a ratio or a total.",
 };
 
-function Metrics({ business, metrics, measures, reload }: { business: Business; metrics: Metric[]; measures: Measure[]; reload: () => void }) {
+export function Metrics({ scope, metrics, measures, reload }: { scope: Scope; metrics: Metric[]; measures: Measure[]; reload: () => void }) {
   const canEdit = useCan("editor");
   const [editing, setEditing] = useState<Metric | "new" | null>(null);
   const [error, setError] = useState("");
@@ -113,7 +127,9 @@ function Metrics({ business, metrics, measures, reload }: { business: Business; 
                 {metrics.map((m) => (
                   <tr key={m.id}>
                     <td>
-                      <div style={{ fontWeight: 600 }}>{m.name}</div>
+                      <div style={{ fontWeight: 600 }}>
+                        {m.name} <PlatformBadge on={m.inherited} />
+                      </div>
                       <div className="mono faint">{m.key}</div>
                     </td>
                     <td>
@@ -129,7 +145,7 @@ function Metrics({ business, metrics, measures, reload }: { business: Business; 
                     </td>
                     <td className="small">{m.direction === "increase" ? "↑ higher" : m.direction === "decrease" ? "↓ lower" : "neutral"}</td>
                     <td className="right nowrap">
-                      {canEdit && (
+                      {canEdit && !m.inherited && (
                         <>
                           <button className="icon-btn" aria-label="Edit" onClick={() => setEditing(m)}>
                             <Icon name="edit" size={16} />
@@ -162,7 +178,7 @@ function Metrics({ business, metrics, measures, reload }: { business: Business; 
       </section>
       {editing && (
         <MetricModal
-          business={business}
+          scope={scope}
           metric={editing === "new" ? null : editing}
           measures={measures}
           metrics={metrics}
@@ -178,14 +194,14 @@ function Metrics({ business, metrics, measures, reload }: { business: Business; 
 }
 
 function MetricModal({
-  business,
+  scope,
   metric,
   measures,
   metrics,
   onClose,
   onSaved,
 }: {
-  business: Business;
+  scope: Scope;
   metric: Metric | null;
   measures: Measure[];
   metrics: Metric[];
@@ -207,9 +223,9 @@ function MetricModal({
       setCheck(null);
       return;
     }
-    api.validateFormula(business.id, formula, f.key).then(setCheck).catch(() => setCheck(null));
+    api.validateFormula(scope, formula, f.key).then(setCheck).catch(() => setCheck(null));
     setPreview(null);
-  }, [formula, business.id, f.key]);
+  }, [formula, scope, f.key]);
 
   const insert = (token: string) => {
     const el = ref.current;
@@ -231,7 +247,7 @@ function MetricModal({
     setError("");
     try {
       if (metric) await api.updateMetric(metric.id, f);
-      else await api.createMetric(business.id, f);
+      else await api.createMetric(scope, f);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -328,7 +344,7 @@ function MetricModal({
         <button
           className="btn btn-sm"
           disabled={!check?.ok}
-          onClick={async () => setPreview(await api.previewFormula(business.id, f.formula, 7))}
+          onClick={async () => setPreview(await api.previewFormula(scope, f.formula, 7))}
         >
           Preview on last 7 days
         </button>
@@ -387,7 +403,7 @@ const AGG_HELP: Record<string, string> = {
   any: "1 if the unit had any matching event",
 };
 
-function Measures({ business, measures, events, reload }: { business: Business; measures: Measure[]; events: EventSummary | null; reload: () => void }) {
+export function Measures({ scope, measures, events, reload }: { scope: Scope; measures: Measure[]; events: EventSummary | null; reload: () => void }) {
   const canEdit = useCan("editor");
   const [editing, setEditing] = useState<Measure | "new" | null>(null);
   const [error, setError] = useState("");
@@ -396,6 +412,7 @@ function Measures({ business, measures, events, reload }: { business: Business; 
       <div className="alert alert-info small">
         A <b>measure</b> turns raw events into one number per unit per day — e.g. <i>search GMV = sum of value of <code>order</code> events where{" "}
         <code>source = search</code></i>. The pipeline computes measures incrementally; editing one recomputes its history in the background.
+        {scope.kind === "platform" && <> A platform measure counts the events of <b>every business</b> under the platform.</>}
       </div>
       <section className="card">
         <div className="card-head">
@@ -427,7 +444,7 @@ function Measures({ business, measures, events, reload }: { business: Business; 
                   <tr key={m.id}>
                     <td>
                       <div style={{ fontWeight: 600 }}>
-                        {m.name} {m.pending_backfill && <span className="badge b-warn">recomputing</span>}
+                        {m.name} <PlatformBadge on={m.inherited} /> {m.pending_backfill && <span className="badge b-warn">recomputing</span>}
                       </div>
                       <div className="mono faint">{m.key}</div>
                     </td>
@@ -446,7 +463,7 @@ function Measures({ business, measures, events, reload }: { business: Business; 
                       </div>
                     </td>
                     <td className="right nowrap">
-                      {canEdit && (
+                      {canEdit && !m.inherited && (
                         <>
                           <button className="icon-btn" aria-label="Edit" onClick={() => setEditing(m)}>
                             <Icon name="edit" size={16} />
@@ -479,7 +496,7 @@ function Measures({ business, measures, events, reload }: { business: Business; 
       </section>
       {editing && (
         <MeasureModal
-          business={business}
+          scope={scope}
           measure={editing === "new" ? null : editing}
           events={events}
           onClose={() => setEditing(null)}
@@ -507,13 +524,13 @@ const FILTER_OPS: [string, string][] = [
 ];
 
 function MeasureModal({
-  business,
+  scope,
   measure,
   events,
   onClose,
   onSaved,
 }: {
-  business: Business;
+  scope: Scope;
   measure: Measure | null;
   events: EventSummary | null;
   onClose: () => void;
@@ -531,7 +548,7 @@ function MeasureModal({
     setError("");
     try {
       if (measure) await api.updateMeasure(measure.id, f);
-      else await api.createMeasure(business.id, f);
+      else await api.createMeasure(scope, f);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -635,14 +652,17 @@ function MeasureModal({
 
 // ---------- metric groups ----------
 
-function Groups({ business, groups, metrics, reload }: { business: Business; groups: MetricGroup[]; metrics: Metric[]; reload: () => void }) {
+export function Groups({ scope, groups, metrics, reload }: { scope: Scope; groups: MetricGroup[]; metrics: Metric[]; reload: () => void }) {
   const canEdit = useCan("editor");
   const [editing, setEditing] = useState<MetricGroup | "new" | null>(null);
   const byId = new Map(metrics.map((m) => [m.id, m]));
   return (
     <div className="stack">
       <div className="row-between">
-        <p className="muted">Metric groups are reusable report templates: an experiment picks one to lead its report with.</p>
+        <p className="muted">
+          Metric groups are reusable report templates (e.g. Back end, Front end, Product). An experiment picks any number of groups, from any business.
+          A <b>default</b> group is added to every experiment of this {scope.kind === "platform" ? "platform's businesses" : "business"} automatically.
+        </p>
         {canEdit && (
           <button className="btn btn-primary btn-sm" onClick={() => setEditing("new")} disabled={metrics.length === 0}>
             <Icon name="plus" /> New group
@@ -658,8 +678,11 @@ function Groups({ business, groups, metrics, reload }: { business: Business; gro
           {groups.map((g) => (
             <div key={g.id} className="card card-pad stack-sm">
               <div className="row-between">
-                <h3>{g.name}</h3>
-                {canEdit && (
+                <h3>
+                  {g.name} {g.is_default && <span className="badge b-good" title="Included in every experiment automatically">default</span>}{" "}
+                  <PlatformBadge on={g.inherited} />
+                </h3>
+                {canEdit && !g.inherited && (
                   <div className="row" style={{ gap: 2 }}>
                     <button className="icon-btn" aria-label="Edit" onClick={() => setEditing(g)}>
                       <Icon name="edit" size={15} />
@@ -691,7 +714,7 @@ function Groups({ business, groups, metrics, reload }: { business: Business; gro
       )}
       {editing && (
         <GroupModal
-          business={business}
+          scope={scope}
           group={editing === "new" ? null : editing}
           metrics={metrics}
           onClose={() => setEditing(null)}
@@ -706,13 +729,13 @@ function Groups({ business, groups, metrics, reload }: { business: Business; gro
 }
 
 function GroupModal({
-  business,
+  scope,
   group,
   metrics,
   onClose,
   onSaved,
 }: {
-  business: Business;
+  scope: Scope;
   group: MetricGroup | null;
   metrics: Metric[];
   onClose: () => void;
@@ -721,6 +744,7 @@ function GroupModal({
   const [name, setName] = useState(group?.name ?? "");
   const [description, setDescription] = useState(group?.description ?? "");
   const [ids, setIds] = useState<number[]>(group?.metric_ids ?? []);
+  const [isDefault, setDefault] = useState(group?.is_default ?? false);
   const [error, setError] = useState("");
   const byId = new Map(metrics.map((m) => [m.id, m]));
   const move = (i: number, d: number) => {
@@ -732,9 +756,9 @@ function GroupModal({
   };
   const save = async () => {
     try {
-      const body = { name, description, metric_ids: ids };
+      const body = { name, description, is_default: isDefault, metric_ids: ids };
       if (group) await api.updateGroup(group.id, body);
-      else await api.createGroup(business.id, body);
+      else await api.createGroup(scope, body);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -761,6 +785,10 @@ function GroupModal({
       <Field label="Description">
         <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} />
       </Field>
+      <label className="check">
+        <input type="checkbox" checked={isDefault} onChange={(e) => setDefault(e.target.checked)} /> Default — include in every experiment of this{" "}
+        {scope.kind === "platform" ? "platform (all its businesses)" : "business"}
+      </label>
       <div className="grid-2">
         <div className="stack-sm">
           <b className="small">Available</b>
@@ -768,7 +796,7 @@ function GroupModal({
             .filter((m) => !ids.includes(m.id))
             .map((m) => (
               <button key={m.id} className="btn btn-sm" style={{ justifyContent: "flex-start" }} onClick={() => setIds([...ids, m.id])}>
-                <Icon name="plus" /> {m.name}
+                <Icon name="plus" /> {m.name} {m.inherited && <span className="faint small">· platform</span>}
               </button>
             ))}
         </div>
@@ -923,7 +951,7 @@ function Settings({ business, onSaved }: { business: Business; onSaved: (b: Busi
             setError("");
             setMsg("");
             try {
-              onSaved(await api.updateBusiness(business.id, { key: business.key, name, description, require_review: review }));
+              onSaved(await api.updateBusiness(business.id, { platform_id: business.platform_id, key: business.key, name, description, require_review: review }));
               setMsg("Saved.");
             } catch (e) {
               setError(e instanceof Error ? e.message : String(e));

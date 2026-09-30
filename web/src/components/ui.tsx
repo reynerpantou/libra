@@ -1,4 +1,5 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { statusClass, statusLabel } from "../lib/format";
 import type { Status } from "../lib/types";
 
@@ -137,7 +138,7 @@ export function Stat({ label, value, sub }: { label: string; value: ReactNode; s
   );
 }
 
-export const seriesColor = (i: number) => `var(--series-${(i % 5) + 1})`;
+export const seriesColor = (i: number) => `var(--series-${(i % 10) + 1})`;
 
 // TrafficBar shows a layer's 1,000 buckets: this experiment's share, what's
 // still free, and what other experiments hold (out of reach).
@@ -170,5 +171,58 @@ export function TrafficBar({ mine, free }: { mine: number; free: number }) {
         )}
       </div>
     </div>
+  );
+}
+
+// Popover floats a card next to an anchor element (like a context menu).
+// It closes on Escape or a click outside, and follows the anchor on scroll.
+export function Popover({ anchor, onClose, width = 480, children }: { anchor: HTMLElement; onClose: () => void; width?: number; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
+  useLayoutEffect(() => {
+    const place = () => {
+      const r = anchor.getBoundingClientRect();
+      const h = ref.current?.offsetHeight ?? 300;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const w = Math.min(width, vw - 16);
+      const left = Math.max(8, Math.min(r.left, vw - w - 8));
+      const below = vh - r.bottom - 8;
+      const above = r.top - 8;
+      if (below >= Math.min(h, 320) || below >= above) setPos({ top: r.bottom + 6, left, maxHeight: below - 6 });
+      else setPos({ top: Math.max(8, r.top - 6 - Math.min(h, above)), left, maxHeight: above - 6 });
+    };
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [anchor, width]);
+  useEffect(() => {
+    const down = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || anchor.contains(t)) return;
+      onClose();
+    };
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("mousedown", down);
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("mousedown", down);
+      document.removeEventListener("keydown", key);
+    };
+  }, [anchor, onClose]);
+  return createPortal(
+    <div
+      ref={ref}
+      className="popover"
+      role="dialog"
+      style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999, width: Math.min(width, window.innerWidth - 16), maxHeight: pos ? Math.max(160, pos.maxHeight) : undefined }}
+    >
+      {children}
+    </div>,
+    document.body
   );
 }

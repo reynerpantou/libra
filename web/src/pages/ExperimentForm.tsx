@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ErrorBox, Field, Icon, Loading, TrafficBar } from "../components/ui";
+import { GroupPicker } from "../components/GroupPicker";
+import { JsonEditor } from "../components/JsonEditor";
+import { ErrorBox, Field, Icon, Loading, Segmented, TrafficBar } from "../components/ui";
+import { diversionName, useDiversions } from "../lib/diversions";
 import { api, type ExperimentInput } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { trafficPct } from "../lib/format";
@@ -24,8 +27,15 @@ export default function ExperimentForm() {
   const nav = useNavigate();
   const { user } = useAuth();
   const refs = useAsync(async () => {
-    const [businesses, layers, users, attributes] = await Promise.all([api.businesses(), api.layers(), api.users(), api.attributes()]);
-    return { businesses, layers, users, attributes };
+    const [businesses, layers, users, attributes, groups, metrics] = await Promise.all([
+      api.businesses(),
+      api.layers(),
+      api.users(),
+      api.attributes(),
+      api.allGroups(),
+      api.allMetrics(),
+    ]);
+    return { businesses, layers, users, attributes, groups, metrics };
   }, []);
   const existing = useAsync(async () => (editing ? api.experiment(Number(id)) : null), [id]);
 
@@ -37,24 +47,28 @@ export default function ExperimentForm() {
   const [ownerId, setOwnerId] = useState<number | null>(null);
   const [traffic, setTraffic] = useState(100);
   const [targeting, setTargeting] = useState<Targeting>({ groups: [] });
-  const [groupId, setGroupId] = useState<number | null>(null);
+  const [groupIds, setGroupIds] = useState<number[]>([]);
+  const [mode, setMode] = useState<"layer" | "auto">("layer");
+  const [autoDiversion, setAutoDiversion] = useState("user_id");
+  const diversions = useDiversions();
   const [variants, setVariants] = useState<VariantDraft[]>(blankVariants());
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const groups = useAsync(async () => (businessId ? api.groups(businessId) : []), [businessId]);
 
   useEffect(() => {
     const e = existing.data;
     if (!e) return;
     setBusinessId(e.business_id);
-    setLayerId(e.layer_id);
+    setMode(e.layer_auto ? "auto" : "layer");
+    if (e.layer_auto) setAutoDiversion(e.layer_diversion);
+    else setLayerId(e.layer_id);
     setName(e.name);
     setHypothesis(e.hypothesis);
     setDescription(e.description);
     setOwnerId(e.owner_id);
     setTraffic(e.traffic_target);
     setTargeting(e.targeting);
-    setGroupId(e.metric_group_id);
+    setGroupIds(e.metric_group_ids ?? []);
     setVariants(
       (e.variants ?? []).map((v) => ({ ...v, paramsText: JSON.stringify(v.params ?? {}, null, 2) }))
     );
@@ -70,7 +84,8 @@ export default function ExperimentForm() {
   const locked = existing.data?.status === "active" || existing.data?.status === "paused";
   const total = variants.reduce((s, v) => s + (Number(v.weight) || 0), 0);
   const layer = refs.data?.layers.find((l) => l.id === layerId);
-  const layerFree = layer ? 1000 - layer.used_buckets + (existing.data?.layer_id === layerId ? existing.data.traffic_held : 0) : 1000;
+  const layerFree = mode === "auto" ? 1000 : layer ? 1000 - layer.used_buckets + (existing.data?.layer_id === layerId ? existing.data.traffic_held : 0) : 1000;
+  const business = refs.data?.businesses.find((b) => b.id === businessId);
   // Don't let a draft plan more traffic than its layer has free.
   useEffect(() => {
     if (!locked && traffic > layerFree) setTraffic(layerFree);
@@ -103,14 +118,15 @@ export default function ExperimentForm() {
     }
     const input: ExperimentInput = {
       business_id: businessId,
-      layer_id: layerId,
+      layer_id: mode === "auto" ? (existing.data?.layer_auto ? existing.data.layer_id : 0) : layerId,
+      auto_diversion: mode === "auto" ? autoDiversion : undefined,
       name,
       hypothesis,
       description,
       owner_id: ownerId,
       traffic_target: traffic,
       targeting,
-      metric_group_id: groupId,
+      metric_group_ids: groupIds,
       variants: variants.map(({ paramsText, ...v }) => ({ ...v, weight: Number(v.weight), params: JSON.parse(paramsText || "{}") })),
     };
     setSaving(true);
@@ -125,13 +141,12 @@ export default function ExperimentForm() {
   };
 
   if (refs.loading || existing.loading) return <div className="page"><Loading /></div>;
-  if (refs.data && (refs.data.businesses.length === 0 || refs.data.layers.length === 0)) {
+  if (refs.data && refs.data.businesses.length === 0) {
     return (
       <div className="page">
         <h1>New experiment</h1>
         <div className="alert alert-warn" style={{ marginTop: 16 }}>
-          An experiment needs a <Link to="/businesses">business</Link> (whose metrics it's measured by) and a{" "}
-          <Link to="/layers">traffic layer</Link>. Create those first.
+          An experiment needs a <Link to="/businesses">business</Link> (whose metrics it's measured by). Create one first.
         </div>
       </div>
     );
@@ -167,22 +182,12 @@ export default function ExperimentForm() {
           <Field label="Notes">
             <textarea className="input" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
           </Field>
-          <div className="grid-3">
-            <Field label="Business" hint="Its metrics measure this experiment.">
-              <select className="input" disabled={locked} value={businessId} onChange={(e) => { setBusinessId(Number(e.target.value)); setGroupId(null); }}>
+          <div className="grid-2">
+            <Field label="Business" hint="Where the experiment lives; its and its platform's default metric groups are always in the report.">
+              <select className="input" disabled={locked} value={businessId} onChange={(e) => setBusinessId(Number(e.target.value))}>
                 {refs.data?.businesses.map((b) => (
                   <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Metric group" hint="Which metrics the report leads with.">
-              <select className="input" value={groupId ?? ""} onChange={(e) => setGroupId(e.target.value ? Number(e.target.value) : null)}>
-                <option value="">All metrics of the business</option>
-                {groups.data?.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
+                    {b.platform_name} › {b.name}
                   </option>
                 ))}
               </select>
@@ -200,20 +205,86 @@ export default function ExperimentForm() {
         </section>
 
         <section className="card card-pad stack">
-          <h2>Traffic</h2>
+          <div>
+            <h2>Metric groups</h2>
+            <p className="faint small">
+              Pick any number of groups — from this business or any other (e.g. Search › Back end with Recommendation › Product). The report shows one
+              section per group. With none picked, the report shows all of the business's metrics plus the defaults.
+            </p>
+          </div>
+          <GroupPicker
+            groups={refs.data?.groups ?? []}
+            metrics={refs.data?.metrics ?? []}
+            value={groupIds}
+            onChange={setGroupIds}
+            businessId={businessId}
+            platformId={business?.platform_id ?? 0}
+          />
+        </section>
+
+        <section className="card card-pad stack">
+          <div className="row-between">
+            <h2>Traffic</h2>
+            <Segmented<"layer" | "auto">
+              options={[
+                ["layer", "Shared layer"],
+                ["auto", "Auto (dedicated)"],
+              ]}
+              value={mode}
+              onChange={(m) => {
+                if (locked) return;
+                setMode(m);
+                if (m === "auto" && mode !== "auto") setTraffic(1000);
+              }}
+            />
+          </div>
+          {mode === "auto" ? (
+            <div className="grid-2">
+              <Field
+                label="Split traffic by"
+                hint="The experiment gets a layer of its own — no other experiment shares its units, so up to 100% of traffic is available. Manage diversions on the Traffic layers page."
+              >
+                <select className="input" disabled={locked} value={autoDiversion} onChange={(e) => setAutoDiversion(e.target.value)}>
+                  {diversions.map((d) => (
+                    <option key={d.key} value={d.key}>
+                      {d.name} ({d.key})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field
+                label={`Traffic: ${trafficPct(traffic)}`}
+                hint={locked ? "Change traffic from the experiment page (ramping keeps current units in)." : "Start small and ramp up from the experiment page, or go straight to 100%."}
+              >
+                <input type="range" min={0} max={1000} step={5} disabled={locked} value={traffic} onChange={(e) => setTraffic(Number(e.target.value))} />
+                <TrafficBar mine={traffic} free={1000} />
+                <div className="row" style={{ marginTop: 6 }}>
+                  {[100, 500, 1000].map((v) => (
+                    <button key={v} type="button" className="btn btn-sm" disabled={locked} onClick={() => setTraffic(v)}>
+                      {trafficPct(v)}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            </div>
+          ) : (refs.data?.layers.length ?? 0) === 0 ? (
+            <div className="alert alert-warn small">
+              No shared layers yet. Use <b>Auto (dedicated)</b>, or create a <Link to="/layers">traffic layer</Link>.
+            </div>
+          ) : (
           <div className="grid-2">
             <Field
               label="Layer"
               hint={
                 layer
-                  ? `Splits traffic by ${layer.diversion === "device_id" ? "device id" : "user id"}. Experiments in the same layer never share a ${layer.diversion === "device_id" ? "device" : "user"}.`
+                  ? `Splits traffic by ${diversionName(diversions, layer.diversion).toLowerCase()}. Experiments in the same layer never share a unit.`
                   : "Experiments in the same layer never share units."
               }
             >
               <select className="input" disabled={locked} value={layerId} onChange={(e) => setLayerId(Number(e.target.value))}>
                 {refs.data?.layers.map((l) => (
                   <option key={l.id} value={l.id}>
-                    {l.name} ({l.diversion === "device_id" ? "by device" : "by user"}) — {trafficPct(1000 - l.used_buckets)} free
+                    {l.name} (by {diversionName(diversions, l.diversion).toLowerCase()}) — {trafficPct(1000 - l.used_buckets)} free
                   </option>
                 ))}
               </select>
@@ -240,6 +311,7 @@ export default function ExperimentForm() {
               <TrafficBar mine={traffic} free={layerFree} />
             </Field>
           </div>
+          )}
         </section>
 
         <section className="card card-pad stack">
@@ -268,7 +340,7 @@ export default function ExperimentForm() {
                 </button>
                 <button
                   className="btn btn-sm"
-                  disabled={variants.length >= 10}
+                  disabled={variants.length >= 20}
                   onClick={() => setVariants([...variants, { key: `variant_${variants.length}`, name: "", is_control: false, weight: 0, paramsText: "{\n  \n}" }])}
                 >
                   <Icon name="plus" /> Add variant
@@ -312,13 +384,15 @@ export default function ExperimentForm() {
                 )}
               </div>
               <div style={{ marginTop: 10 }}>
-                <Field label="Parameters (JSON)" hint={paramErrors[i] ? <span style={{ color: "var(--bad)" }}>{paramErrors[i]}</span> : undefined}>
-                  <textarea
-                    className="input input-mono"
-                    rows={Math.min(10, Math.max(3, v.paramsText.split("\n").length))}
+                <Field
+                  label="Parameters (JSON)"
+                  hint={paramErrors[i] ? <span style={{ color: "var(--bad)" }}>{paramErrors[i]}</span> : "Tab / Shift+Tab indent. Esc, then Tab, moves to the next field."}
+                >
+                  <JsonEditor
                     disabled={locked}
+                    invalid={!!paramErrors[i]}
                     value={v.paramsText}
-                    onChange={(e) => setVariants(variants.map((x, j) => (j === i ? { ...x, paramsText: e.target.value } : x)))}
+                    onChange={(t) => setVariants(variants.map((x, j) => (j === i ? { ...x, paramsText: t } : x)))}
                   />
                 </Field>
               </div>

@@ -37,7 +37,7 @@ type LayerHolder struct {
 }
 
 func (s *Server) ListLayers(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.DB.QueryContext(r.Context(), `SELECT id, name, description, diversion FROM layers ORDER BY name`)
+	rows, err := s.DB.QueryContext(r.Context(), `SELECT id, name, description, diversion FROM layers WHERE NOT auto ORDER BY name`)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -98,8 +98,9 @@ func (s *Server) CreateLayer(w http.ResponseWriter, r *http.Request) {
 	if req.Diversion == "" {
 		req.Diversion = assign.DiversionUser
 	}
-	if req.Diversion != assign.DiversionUser && req.Diversion != assign.DiversionDevice {
-		badRequest(w, "diversion must be user_id or device_id")
+	var n int
+	if s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM diversions WHERE key = $1`, req.Diversion).Scan(&n); n == 0 {
+		badRequest(w, "that diversion type doesn't exist")
 		return
 	}
 	salt, err := auth.NewToken()
@@ -183,7 +184,8 @@ type Experiment struct {
 	TrafficHeld       int              `json:"traffic_held"`
 	Targeting         assign.Targeting `json:"targeting"`
 	LayerDiversion    string           `json:"layer_diversion"`
-	MetricGroupID     *int64           `json:"metric_group_id"`
+	MetricGroupIDs    []int64          `json:"metric_group_ids"`
+	LayerAuto         bool             `json:"layer_auto"` // a dedicated layer: the experiment can use up to 100%
 	ReviewNote        string           `json:"review_note"`
 	ReviewerName      string           `json:"reviewer_name"`
 	LaunchedVariantID *int64           `json:"launched_variant_id"`
@@ -199,9 +201,9 @@ type Experiment struct {
 }
 
 const experimentSelect = `
-	SELECT e.id, e.business_id, b.key, b.name, e.layer_id, l.name, l.diversion, e.name, e.hypothesis, e.description,
+	SELECT e.id, e.business_id, b.key, b.name, e.layer_id, l.name, l.diversion, l.auto, e.name, e.hypothesis, e.description,
 	       e.owner_id, COALESCE(NULLIF(o.display_name, ''), o.username, ''), e.status, e.traffic_target, cardinality(e.buckets),
-	       e.targeting, e.metric_group_id, e.review_note, COALESCE(NULLIF(rv.display_name, ''), rv.username, ''),
+	       e.targeting, array_to_string(e.metric_group_ids, ','), e.review_note, COALESCE(NULLIF(rv.display_name, ''), rv.username, ''),
 	       e.launched_variant_id, e.started_at, e.ended_at, e.launched_at, e.created_at, e.updated_at,
 	       (SELECT count(*) FROM assignments a WHERE a.experiment_id = e.id)
 	FROM experiments e
@@ -213,14 +215,16 @@ const experimentSelect = `
 func scanExperiment(sc interface{ Scan(...any) error }) (Experiment, error) {
 	var e Experiment
 	var targeting []byte
-	err := sc.Scan(&e.ID, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.Name, &e.Hypothesis, &e.Description,
+	var groups string
+	err := sc.Scan(&e.ID, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.LayerAuto, &e.Name, &e.Hypothesis, &e.Description,
 		&e.OwnerID, &e.OwnerName, &e.Status, &e.TrafficTarget, &e.TrafficHeld,
-		&targeting, &e.MetricGroupID, &e.ReviewNote, &e.ReviewerName,
+		&targeting, &groups, &e.ReviewNote, &e.ReviewerName,
 		&e.LaunchedVariantID, &e.StartedAt, &e.EndedAt, &e.LaunchedAt, &e.CreatedAt, &e.UpdatedAt, &e.Units)
 	if err != nil {
 		return e, err
 	}
 	_ = json.Unmarshal(targeting, &e.Targeting)
+	e.MetricGroupIDs = parseIDs(groups)
 	return e, nil
 }
 
@@ -328,16 +332,19 @@ func (s *Server) GetExperiment(w http.ResponseWriter, r *http.Request) {
 }
 
 type experimentRequest struct {
-	BusinessID    int64            `json:"business_id"`
-	LayerID       int64            `json:"layer_id"`
-	Name          string           `json:"name"`
-	Hypothesis    string           `json:"hypothesis"`
-	Description   string           `json:"description"`
-	OwnerID       *int64           `json:"owner_id"`
-	TrafficTarget int              `json:"traffic_target"`
-	Targeting     assign.Targeting `json:"targeting"`
-	MetricGroupID *int64           `json:"metric_group_id"`
-	Variants      []VariantIn      `json:"variants"`
+	BusinessID     int64            `json:"business_id"`
+	LayerID        int64            `json:"layer_id"`
+	Name           string           `json:"name"`
+	Hypothesis     string           `json:"hypothesis"`
+	Description    string           `json:"description"`
+	OwnerID        *int64           `json:"owner_id"`
+	TrafficTarget  int              `json:"traffic_target"`
+	Targeting      assign.Targeting `json:"targeting"`
+	MetricGroupIDs []int64          `json:"metric_group_ids"`
+	// AutoDiversion, when set, gives the experiment its own dedicated layer
+	// splitting by this diversion instead of a shared LayerID.
+	AutoDiversion string      `json:"auto_diversion,omitempty"`
+	Variants      []VariantIn `json:"variants"`
 }
 
 var variantKey = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
@@ -350,8 +357,14 @@ func (req *experimentRequest) validate() string {
 	req.Name = name
 	req.Hypothesis = strings.TrimSpace(req.Hypothesis)
 	req.Description = strings.TrimSpace(req.Description)
-	if req.BusinessID == 0 || req.LayerID == 0 {
-		return "choose a business and a layer"
+	if req.BusinessID == 0 || (req.LayerID == 0 && req.AutoDiversion == "") {
+		return "choose a business and a layer (or Auto)"
+	}
+	if req.MetricGroupIDs == nil {
+		req.MetricGroupIDs = []int64{}
+	}
+	if len(req.MetricGroupIDs) > 50 {
+		return "at most 50 metric groups"
 	}
 	if req.TrafficTarget < 0 || req.TrafficTarget > assign.Buckets {
 		return "traffic must be between 0% and 100%"
@@ -359,8 +372,8 @@ func (req *experimentRequest) validate() string {
 	if err := assign.ValidateTargeting(req.Targeting, nil); err != nil {
 		return err.Error()
 	}
-	if len(req.Variants) < 2 || len(req.Variants) > 10 {
-		return "an experiment needs 2 to 10 variants"
+	if len(req.Variants) < 2 || len(req.Variants) > 20 {
+		return "an experiment needs 2 to 20 variants"
 	}
 	controls, total := 0, 0
 	seen := map[string]bool{}
@@ -423,15 +436,27 @@ func (s *Server) CreateExperiment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	if req.AutoDiversion != "" {
+		if req.LayerID, err = createAutoLayer(r.Context(), tx, req.AutoDiversion); err != nil {
+			serverError(w, r, err)
+			return
+		}
+	}
 	targeting, _ := json.Marshal(req.Targeting)
 	var id int64
 	if err := tx.QueryRowContext(r.Context(), `
-		INSERT INTO experiments (business_id, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_id)
+		INSERT INTO experiments (business_id, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_ids)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
-		req.BusinessID, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, salt[:16], req.TrafficTarget, targeting, req.MetricGroupID,
+		req.BusinessID, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, salt[:16], req.TrafficTarget, targeting, req.MetricGroupIDs,
 	).Scan(&id); err != nil {
 		serverError(w, r, err)
 		return
+	}
+	if req.AutoDiversion != "" {
+		if _, err := tx.ExecContext(r.Context(), `UPDATE layers SET name = $2 WHERE id = $1`, req.LayerID, fmt.Sprintf("auto-%d", id)); err != nil {
+			serverError(w, r, err)
+			return
+		}
 	}
 	if err := writeVariants(r.Context(), tx, id, req.Variants); err != nil {
 		serverError(w, r, err)
@@ -460,12 +485,20 @@ func (s *Server) checkRefs(ctx context.Context, req *experimentRequest, self int
 	if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM businesses WHERE id = $1`, req.BusinessID).Scan(&n); n == 0 {
 		return "that business doesn't exist"
 	}
-	if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM layers WHERE id = $1`, req.LayerID).Scan(&n); n == 0 {
-		return "that layer doesn't exist"
+	if req.AutoDiversion != "" {
+		if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM diversions WHERE key = $1`, req.AutoDiversion).Scan(&n); n == 0 {
+			return "that diversion type doesn't exist"
+		}
+	} else if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM layers WHERE id = $1 AND NOT auto`, req.LayerID).Scan(&n); n == 0 {
+		// A dedicated layer is only valid for the experiment that owns it.
+		if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM experiments WHERE id = $1 AND layer_id = $2`, self, req.LayerID).Scan(&n); n == 0 {
+			return "that layer doesn't exist"
+		}
 	}
-	if req.MetricGroupID != nil {
-		if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM metric_groups WHERE id = $1 AND business_id = $2`, *req.MetricGroupID, req.BusinessID).Scan(&n); n == 0 {
-			return "that metric group doesn't belong to the business"
+	if len(req.MetricGroupIDs) > 0 {
+		// Groups can come from any business or platform.
+		if s.DB.QueryRowContext(ctx, `SELECT count(DISTINCT id) FROM metric_groups WHERE id = ANY($1::bigint[])`, req.MetricGroupIDs).Scan(&n); n != len(req.MetricGroupIDs) {
+			return "every metric group must exist and appear once"
 		}
 	}
 	if req.OwnerID != nil {
@@ -482,9 +515,12 @@ func (s *Server) checkRefs(ctx context.Context, req *experimentRequest, self int
 			return err.Error()
 		}
 	}
-	free, err := s.layerFree(ctx, s.DB, req.LayerID, self)
-	if err != nil {
-		return "could not check the layer's free traffic"
+	free := assign.Buckets // a dedicated layer is all this experiment's
+	if req.AutoDiversion == "" {
+		var err error
+		if free, err = s.layerFree(ctx, s.DB, req.LayerID, self); err != nil {
+			return "could not check the layer's free traffic"
+		}
 	}
 	if req.TrafficTarget > free {
 		return fmt.Sprintf("the layer only has %s free; lower the traffic or free the layer first", pct(free))
@@ -559,6 +595,7 @@ func (s *Server) UpdateExperiment(w http.ResponseWriter, r *http.Request) {
 	if locked {
 		// Keep what can't change; validate the rest.
 		req.BusinessID, req.LayerID, req.Variants, req.TrafficTarget = cur.BusinessID, cur.LayerID, cur.Variants, cur.TrafficTarget
+		req.AutoDiversion = ""
 	}
 	if msg := req.validate(); msg != "" {
 		badRequest(w, msg)
@@ -582,15 +619,43 @@ func (s *Server) UpdateExperiment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	// Switching to Auto reuses the experiment's dedicated layer if it has
+	// one; switching away from it deletes that layer.
+	dropAuto := int64(0)
+	switch {
+	case req.AutoDiversion != "" && cur.LayerAuto:
+		req.LayerID = cur.LayerID
+		if _, err := tx.ExecContext(r.Context(), `UPDATE layers SET diversion = $2 WHERE id = $1`, cur.LayerID, req.AutoDiversion); err != nil {
+			serverError(w, r, err)
+			return
+		}
+	case req.AutoDiversion != "":
+		if req.LayerID, err = createAutoLayer(r.Context(), tx, req.AutoDiversion); err != nil {
+			serverError(w, r, err)
+			return
+		}
+		if _, err := tx.ExecContext(r.Context(), `UPDATE layers SET name = $2 WHERE id = $1`, req.LayerID, fmt.Sprintf("auto-%d", id)); err != nil {
+			serverError(w, r, err)
+			return
+		}
+	case cur.LayerAuto && req.LayerID != cur.LayerID:
+		dropAuto = cur.LayerID
+	}
 	targeting, _ := json.Marshal(req.Targeting)
 	if _, err := tx.ExecContext(r.Context(), `
 		UPDATE experiments SET business_id = $2, layer_id = $3, name = $4, hypothesis = $5, description = $6, owner_id = $7,
-			traffic_target = $8, targeting = $9, metric_group_id = $10, status = $11, updated_at = now()
+			traffic_target = $8, targeting = $9, metric_group_ids = $10, status = $11, updated_at = now()
 		WHERE id = $1`,
-		id, req.BusinessID, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, req.TrafficTarget, targeting, req.MetricGroupID, next,
+		id, req.BusinessID, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, req.TrafficTarget, targeting, req.MetricGroupIDs, next,
 	); err != nil {
 		serverError(w, r, err)
 		return
+	}
+	if dropAuto != 0 {
+		if _, err := tx.ExecContext(r.Context(), `DELETE FROM layers WHERE id = $1 AND auto AND NOT EXISTS (SELECT 1 FROM experiments WHERE layer_id = $1)`, dropAuto); err != nil {
+			serverError(w, r, err)
+			return
+		}
 	}
 	if !locked {
 		if err := writeVariants(r.Context(), tx, id, req.Variants); err != nil {
@@ -1088,6 +1153,14 @@ func (s *Server) CloneExperiment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	layerID := e.LayerID
+	if e.LayerAuto {
+		// A dedicated layer isn't shared: the copy gets its own.
+		if layerID, err = createAutoLayer(r.Context(), tx, e.LayerDiversion); err != nil {
+			serverError(w, r, err)
+			return
+		}
+	}
 	targeting, _ := json.Marshal(e.Targeting)
 	var newID int64
 	name := e.Name + " (copy)"
@@ -1095,12 +1168,18 @@ func (s *Server) CloneExperiment(w http.ResponseWriter, r *http.Request) {
 		name = string([]rune(name)[:120])
 	}
 	if err := tx.QueryRowContext(r.Context(), `
-		INSERT INTO experiments (business_id, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_id)
+		INSERT INTO experiments (business_id, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_ids)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
-		e.BusinessID, e.LayerID, name, e.Hypothesis, e.Description, user(r).ID, salt[:16], e.TrafficTarget, targeting, e.MetricGroupID,
+		e.BusinessID, layerID, name, e.Hypothesis, e.Description, user(r).ID, salt[:16], e.TrafficTarget, targeting, e.MetricGroupIDs,
 	).Scan(&newID); err != nil {
 		serverError(w, r, err)
 		return
+	}
+	if e.LayerAuto {
+		if _, err := tx.ExecContext(r.Context(), `UPDATE layers SET name = $2 WHERE id = $1`, layerID, fmt.Sprintf("auto-%d", newID)); err != nil {
+			serverError(w, r, err)
+			return
+		}
 	}
 	if err := writeVariants(r.Context(), tx, newID, e.Variants); err != nil {
 		serverError(w, r, err)
@@ -1163,4 +1242,17 @@ func (s *Server) reload(ctx context.Context) {
 	if s.Store != nil {
 		_ = s.Store.Reload(ctx, false)
 	}
+}
+
+// createAutoLayer makes a dedicated layer for one experiment. Its name is
+// set to auto-<experiment id> once the experiment exists.
+func createAutoLayer(ctx context.Context, tx *sql.Tx, diversion string) (int64, error) {
+	salt, err := auth.NewToken()
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	err = tx.QueryRowContext(ctx, `INSERT INTO layers (name, description, salt, diversion, auto) VALUES ($1, $2, $3, $4, true) RETURNING id`,
+		"auto-new-"+salt[:10], "Dedicated layer of one experiment", salt[:16], diversion).Scan(&id)
+	return id, err
 }

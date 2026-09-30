@@ -4,10 +4,11 @@ import { LineChart } from "../components/LineChart";
 import { ParamTree, UsagePanel } from "../components/ParamTree";
 import ReportView from "../components/ReportView";
 import { TargetingView } from "../components/Targeting";
-import { Empty, ErrorBox, Field, Icon, Loading, Modal, StatusBadge, Tabs, TrafficBar } from "../components/ui";
+import { Empty, ErrorBox, Field, Icon, Loading, Modal, Popover, StatusBadge, Tabs, TrafficBar } from "../components/ui";
 import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { actionLabel, fmtDate, fmtDateTime, fmtInt, statusLabel, trafficPct } from "../lib/format";
+import { diversionName, useDiversions } from "../lib/diversions";
 import { useAsync } from "../lib/hooks";
 import type { Experiment, Status } from "../lib/types";
 
@@ -91,7 +92,7 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
         </div>
         <p>{e.hypothesis || <span className="faint">No hypothesis written.</span>}</p>
         <div className="row small faint" style={{ marginTop: 6 }}>
-          <span>{e.business_name}</span>·<span>layer {e.layer_name}</span>·<span>owner {e.owner_name || "—"}</span>·
+          <span>{e.business_name}</span>·<span>{e.layer_auto ? `dedicated layer (by ${e.layer_diversion})` : `layer ${e.layer_name}`}</span>·<span>owner {e.owner_name || "—"}</span>·
           <span>
             {e.status === "active" || e.status === "paused" ? `${trafficPct(e.traffic_held)} traffic` : `target ${trafficPct(e.traffic_target)}`}
           </span>
@@ -193,7 +194,8 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
   const layers = useAsync(() => api.layers(), [e.updated_at]);
   const exposures = useAsync(() => api.exposures(e.id), [e.id]);
   const usage = useAsync(() => api.paramUsage(e.id), [e.id, e.updated_at]);
-  const [path, setPath] = useState("");
+  const diversions = useDiversions();
+  const [sel, setSel] = useState<{ path: string; anchor: HTMLElement } | null>(null);
   useEffect(() => setTraffic(e.traffic_target), [e.traffic_target]);
   const layer = layers.data?.find((l) => l.id === e.layer_id);
   const running = e.status === "active" || e.status === "paused";
@@ -224,7 +226,7 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
               <Link to={`/businesses/${e.business_id}`}>{e.business_name}</Link>
             </dd>
             <dt>Layer</dt>
-            <dd>{e.layer_name}</dd>
+            <dd>{e.layer_auto ? <span title="A layer of its own: no other experiment shares its traffic">Dedicated (auto)</span> : e.layer_name}</dd>
             <dt>Status</dt>
             <dd>{statusLabel[e.status as Status]}</dd>
             <dt>Created</dt>
@@ -247,7 +249,9 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
               <TargetingView value={e.targeting} />
             </dd>
             <dt>Split by</dt>
-            <dd>{e.layer_diversion === "device_id" ? "Device id" : "User id"} (set by the layer)</dd>
+            <dd>
+              {diversionName(diversions, e.layer_diversion)} <span className="mono faint">{e.layer_diversion}</span>
+            </dd>
             <dt>Units measured</dt>
             <dd>{fmtInt(e.units)}</dd>
           </dl>
@@ -263,7 +267,13 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
                 {running ? "of the layer's units are in this experiment" : finished ? "traffic released" : `will take ${trafficPct(e.traffic_target)} when started`}
               </div>
             </div>
-            {layer && (
+            {e.layer_auto ? (
+              <div className="right small faint">
+                Dedicated layer
+                <br />
+                no other experiments
+              </div>
+            ) : layer && (
               <div className="right small faint">
                 Layer {layer.name}
                 <br />
@@ -354,17 +364,22 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
                   </td>
                   <td className="num">{trafficPct(v.weight)}</td>
                   <td>
-                    <ParamTree value={v.params} usage={usage.data?.paths ?? null} selected={path} onSelect={(p) => setPath(p === path ? "" : p)} />
+                    <ParamTree
+                      value={v.params}
+                      usage={usage.data?.paths ?? null}
+                      selected={sel?.anchor.isConnected ? sel.path : ""}
+                      onSelect={(p, anchor) => setSel(sel?.anchor === anchor ? null : { path: p, anchor })}
+                    />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        {path && usage.data && (
-          <div className="card-pad" style={{ borderTop: "1px solid var(--border)" }}>
-            <UsagePanel path={path} uses={usage.data.paths[path] ?? []} rules={usage.data.priority_rules} />
-          </div>
+        {sel && usage.data && (
+          <Popover anchor={sel.anchor} onClose={() => setSel(null)}>
+            <UsagePanel path={sel.path} uses={usage.data.paths[sel.path] ?? []} rules={usage.data.priority_rules} onClose={() => setSel(null)} />
+          </Popover>
         )}
       </section>
 
@@ -390,6 +405,7 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
 
 function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
   const canEdit = useCan("editor");
+  const diversions = useDiversions();
   const [units, setUnits] = useState("");
   const [variant, setVariant] = useState<number>(e.variants?.find((v) => !v.is_control)?.id ?? 0);
   const [note, setNote] = useState("");
@@ -409,6 +425,7 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
+  const dname = diversionName(diversions, e.layer_diversion);
   return (
     <div className="grid-2" style={{ alignItems: "start" }}>
       <section className="card">
@@ -416,7 +433,7 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
           <div>
             <h2>Test users</h2>
             <p>
-              Whitelisted {e.layer_diversion === "device_id" ? "devices" : "users"} always get their variant — even before the experiment starts — and are
+              Whitelisted units (by {dname}) always get their variant — even before the experiment starts — and are
               left out of reports.
             </p>
           </div>
@@ -427,7 +444,7 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
           <table className="tbl tbl-compact">
             <thead>
               <tr>
-                <th>{e.layer_diversion === "device_id" ? "Device id" : "User id"}</th>
+                <th>{dname}</th>
                 <th>Variant</th>
                 <th>Note</th>
                 <th />
@@ -456,8 +473,8 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
         <section className="card card-pad stack">
           <h2>Add test users</h2>
           <Field
-            label={e.layer_diversion === "device_id" ? "Device ids" : "User ids"}
-            hint={`This experiment's layer splits by ${e.layer_diversion === "device_id" ? "device" : "user"}, so enter ${e.layer_diversion === "device_id" ? "device" : "user"} ids — one per line, or separated by commas or spaces.`}
+            label={`${dname}s`}
+            hint={`This experiment splits by ${dname.toLowerCase()} (${e.layer_diversion}), so enter those ids — one per line, or separated by commas or spaces.`}
           >
             <textarea className="input input-mono" rows={4} value={units} onChange={(x) => setUnits(x.target.value)} />
           </Field>

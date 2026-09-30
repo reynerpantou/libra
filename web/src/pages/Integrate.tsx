@@ -1,9 +1,12 @@
 import { Link } from "react-router-dom";
 import { BASE } from "../lib/api";
+import { useDiversions } from "../lib/diversions";
 
 const origin = (typeof window !== "undefined" ? window.location.origin : "https://libra.example.com") + BASE;
 
 export default function Integrate() {
+  const diversions = useDiversions();
+  const extra = diversions.filter((d) => d.key !== "user_id" && d.key !== "device_id");
   return (
     <div className="page" style={{ maxWidth: 920 }}>
       <div className="page-head">
@@ -32,7 +35,21 @@ export default function Integrate() {
 }`}</pre>
           <p className="muted small">
             Send both <code>user_id</code> and <code>device_id</code> when you have them: each layer splits traffic by one of them (its{" "}
-            <i>diversion</i>), and an experiment whose id is missing from the request is skipped. <code>attrs</code> are matched against targeting rules and kept (up to 10 short values) for report breakdowns. Pass{" "}
+            <i>diversion</i>), and an experiment whose id is missing from the request is skipped.
+            {extra.length > 0 && (
+              <>
+                {" "}
+                Other diversions go in an <code>ids</code> object: <code>{`"ids": {${extra.map((d) => `"${d.key}": "…"`).join(", ")}}`}</code>.
+              </>
+            )}{" "}
+            Current diversions:{" "}
+            {diversions.map((d, i) => (
+              <span key={d.key}>
+                {i > 0 && ", "}
+                <code>{d.key}</code> ({d.name})
+              </span>
+            ))}
+            . <code>attrs</code> are matched against targeting rules and kept (up to 10 short values) for report breakdowns. Pass{" "}
             <code>"log_exposure": false</code> to prefetch without logging, then report the exposure when the user actually sees the change:
           </p>
           <pre className="code">{`curl -X POST ${origin}/api/v1/exposures -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\
@@ -43,7 +60,7 @@ export default function Integrate() {
           <h2>2. Send business events</h2>
           <p className="muted">
             Push the raw events your metrics are made of — searches, clicks, orders — in batches of up to 5,000. Each has a business key, an event name,
-            the <code>user_id</code> and/or <code>device_id</code>, an optional numeric <code>value</code> and optional <code>props</code>. Needs the <b>ingest</b> scope. Timestamps up to 30 days
+            the <code>user_id</code> and/or <code>device_id</code> (and <code>ids</code> for other diversions), an optional numeric <code>value</code> and optional <code>props</code>. Needs the <b>ingest</b> scope. Timestamps up to 30 days
             old are accepted for backfills.
           </p>
           <pre className="code">{`curl -X POST ${origin}/api/v1/events -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\

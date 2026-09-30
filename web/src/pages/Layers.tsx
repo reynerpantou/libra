@@ -5,7 +5,8 @@ import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { trafficPct } from "../lib/format";
 import { useAsync } from "../lib/hooks";
-import type { Diversion } from "../lib/types";
+import { diversionName, reloadDiversions, useDiversions } from "../lib/diversions";
+import type { Diversion, DiversionDef } from "../lib/types";
 
 export default function Layers() {
   const layers = useAsync(() => api.layers(), []);
@@ -15,6 +16,7 @@ export default function Layers() {
   const [description, setDescription] = useState("");
   const [diversion, setDiversion] = useState<Diversion>("user_id");
   const [error, setError] = useState("");
+  const diversions = useDiversions();
   return (
     <div className="page">
       <div className="page-head">
@@ -31,6 +33,7 @@ export default function Layers() {
           </button>
         )}
       </div>
+      <Diversions />
       <ErrorBox error={layers.error} />
       {layers.loading && !layers.data ? (
         <Loading />
@@ -46,7 +49,7 @@ export default function Layers() {
                 <div>
                   <div className="row">
                     <h2>{l.name}</h2>
-                    <span className="badge b-accent">split by {l.diversion === "device_id" ? "device id" : "user id"}</span>
+                    <span className="badge b-accent">split by {diversionName(diversions, l.diversion)}</span>
                   </div>
                   {l.description && <p className="faint small">{l.description}</p>}
                 </div>
@@ -112,13 +115,144 @@ export default function Layers() {
             hint="Every experiment in the layer randomizes on this id. User id keeps a person's experience consistent across devices; device id works before sign-in. It can't change later."
           >
             <select className="input" value={diversion} onChange={(e) => setDiversion(e.target.value as Diversion)}>
-              <option value="user_id">User id</option>
-              <option value="device_id">Device id</option>
+              {diversions.map((d) => (
+                <option key={d.key} value={d.key}>
+                  {d.name} ({d.key})
+                </option>
+              ))}
             </select>
           </Field>
           <ErrorBox error={error} />
         </Modal>
       )}
     </div>
+  );
+}
+
+// Diversions: the ids traffic can be split by. user_id and device_id are
+// built in; others (e.g. shop_id, session_id) are sent in the "ids" object.
+function Diversions() {
+  const isAdmin = useCan("admin");
+  const list = useDiversions();
+  const [editing, setEditing] = useState<DiversionDef | "new" | null>(null);
+  const [error, setError] = useState("");
+  return (
+    <section className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <div>
+          <h2>Diversions</h2>
+          <p>
+            The ids traffic can be split by. Services send <code>user_id</code> and <code>device_id</code> directly and any other diversion in{" "}
+            <code>{'"ids": {"shop_id": "…"}'}</code>. New ones appear everywhere a diversion is chosen.
+          </p>
+        </div>
+        {isAdmin && (
+          <button className="btn btn-sm" onClick={() => setEditing("new")}>
+            <Icon name="plus" /> New diversion
+          </button>
+        )}
+      </div>
+      <ErrorBox error={error} />
+      <div className="table-wrap">
+        <table className="tbl tbl-compact">
+          <thead>
+            <tr>
+              <th>Diversion</th>
+              <th>Key</th>
+              <th>Description</th>
+              <th className="num">Layers</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((d) => (
+              <tr key={d.key}>
+                <td style={{ fontWeight: 600 }}>
+                  {d.name} {d.builtin && <span className="badge">built in</span>}
+                </td>
+                <td className="mono">{d.key}</td>
+                <td className="faint small">{d.description}</td>
+                <td className="num">{d.layers}</td>
+                <td className="right nowrap">
+                  {isAdmin && (
+                    <>
+                      <button className="icon-btn" aria-label="Edit" onClick={() => setEditing(d)}>
+                        <Icon name="edit" size={15} />
+                      </button>
+                      {!d.builtin && (
+                        <button
+                          className="icon-btn"
+                          aria-label="Delete"
+                          disabled={d.layers > 0}
+                          title={d.layers > 0 ? "Layers split by it" : "Delete"}
+                          onClick={async () => {
+                            if (!confirm(`Delete diversion ${d.key}?`)) return;
+                            setError("");
+                            try {
+                              await api.deleteDiversion(d.key);
+                              await reloadDiversions();
+                            } catch (e) {
+                              setError(e instanceof Error ? e.message : String(e));
+                            }
+                          }}
+                        >
+                          <Icon name="trash" size={15} />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {editing && <DiversionModal d={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
+    </section>
+  );
+}
+
+function DiversionModal({ d, onClose }: { d: DiversionDef | null; onClose: () => void }) {
+  const [key, setKey] = useState(d?.key ?? "");
+  const [name, setName] = useState(d?.name ?? "");
+  const [description, setDescription] = useState(d?.description ?? "");
+  const [error, setError] = useState("");
+  const save = async () => {
+    setError("");
+    try {
+      if (d) await api.updateDiversion(d.key, { name, description });
+      else await api.createDiversion({ key, name, description });
+      await reloadDiversions();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <Modal
+      title={d ? `Edit ${d.key}` : "New diversion"}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={save}>
+            Save
+          </button>
+        </>
+      }
+    >
+      <Field label="Name">
+        <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Shop id" />
+      </Field>
+      <Field label="Key" hint="Lowercase letters, digits and _. Services send it in the ids object. It can't change later.">
+        <input className="input input-mono" value={key} disabled={!!d} onChange={(e) => setKey(e.target.value)} placeholder="shop_id" />
+      </Field>
+      <Field label="Description">
+        <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} />
+      </Field>
+      <ErrorBox error={error} />
+    </Modal>
   );
 }
