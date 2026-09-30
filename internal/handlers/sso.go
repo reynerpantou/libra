@@ -40,7 +40,8 @@ func (s *Server) AuthProviders(w http.ResponseWriter, r *http.Request) {
 			out = append(out, name)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"providers": out})
+	needed, _ := s.setupNeeded(r.Context(), s.DB)
+	writeJSON(w, http.StatusOK, map[string]any{"providers": out, "setup_needed": needed})
 }
 
 func (s *Server) redirectURI(provider string) string {
@@ -57,30 +58,37 @@ func loginError(w http.ResponseWriter, r *http.Request, code string, extra url.V
 	http.Redirect(w, r, "/login?"+q.Encode(), http.StatusSeeOther)
 }
 
-// AuthStart begins a sign-in: it remembers a one-time state, nonce and PKCE
-// verifier for this browser, then sends the browser to the provider.
+// AuthStart begins a sign-in and sends the browser to the provider.
 func (s *Server) AuthStart(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("provider")
+	target, err := s.beginFlow(w, r, r.PathValue("provider"), "signin")
+	if err != nil {
+		loginError(w, r, err.Error(), nil)
+		return
+	}
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// beginFlow remembers a one-time state, nonce and PKCE verifier for this
+// browser and returns the provider URL to send it to. On failure the error
+// text is a login error code.
+func (s *Server) beginFlow(w http.ResponseWriter, r *http.Request, name, purpose string) (string, error) {
 	p := s.Providers[name]
 	if p == nil {
-		loginError(w, r, "unavailable", nil)
-		return
+		return "", errors.New("unavailable")
 	}
 	state, err1 := auth.NewToken()
 	nonce, err2 := auth.NewToken()
 	verifier, err3 := auth.NewToken()
 	browser, err4 := auth.NewToken()
 	if err := errors.Join(err1, err2, err3, err4); err != nil {
-		loginError(w, r, "failed", nil)
-		return
+		return "", errors.New("failed")
 	}
 	if _, err := s.DB.ExecContext(r.Context(),
-		`INSERT INTO auth_flows (id, browser, provider, nonce, verifier, expires_at) VALUES ($1, $2, $3, $4, $5, $6)`,
-		auth.HashToken(state), auth.HashToken(browser), name, nonce, verifier, time.Now().Add(flowTTL),
+		`INSERT INTO auth_flows (id, browser, provider, nonce, verifier, expires_at, purpose) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		auth.HashToken(state), auth.HashToken(browser), name, nonce, verifier, time.Now().Add(flowTTL), purpose,
 	); err != nil {
 		log.Printf("sso start: %v", err)
-		loginError(w, r, "failed", nil)
-		return
+		return "", errors.New("failed")
 	}
 	// Apple comes back with a cross-site POST, which only carries cookies
 	// marked SameSite=None (and those must be Secure). Google comes back
@@ -94,7 +102,7 @@ func (s *Server) AuthStart(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true, Secure: s.Cfg.CookieSecure, SameSite: sameSite,
 		MaxAge: int(flowTTL.Seconds()),
 	})
-	http.Redirect(w, r, p.AuthCodeURL(s.redirectURI(name), state, nonce, verifier), http.StatusFound)
+	return p.AuthCodeURL(s.redirectURI(name), state, nonce, verifier), nil
 }
 
 // AuthCallback finishes a sign-in. Google calls it with GET, Apple with a
@@ -131,12 +139,12 @@ func (s *Server) AuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The flow is deleted as it's read, so a state works exactly once.
-	var browser, provider, nonce, verifier string
+	var browser, provider, nonce, verifier, purpose string
 	var expires time.Time
 	err = s.DB.QueryRowContext(r.Context(),
-		`DELETE FROM auth_flows WHERE id = $1 RETURNING browser, provider, nonce, verifier, expires_at`,
+		`DELETE FROM auth_flows WHERE id = $1 RETURNING browser, provider, nonce, verifier, expires_at, purpose`,
 		auth.HashToken(state),
-	).Scan(&browser, &provider, &nonce, &verifier, &expires)
+	).Scan(&browser, &provider, &nonce, &verifier, &expires, &purpose)
 	if err != nil || provider != name || time.Now().After(expires) ||
 		subtle.ConstantTimeCompare([]byte(browser), []byte(auth.HashToken(c.Value))) != 1 {
 		loginError(w, r, "expired", nil)
@@ -155,7 +163,16 @@ func (s *Server) AuthCallback(w http.ResponseWriter, r *http.Request) {
 		claims.Name = appleName(r.FormValue("user"))
 	}
 
-	uid, err := s.linkIdentity(r.Context(), name, claims.Subject, claims.Email, claims.EmailVerified, claims.Name)
+	var uid int64
+	if purpose == "setup" {
+		uid, err = s.claimOwner(r.Context(), name, claims.Subject, claims.Email, claims.EmailVerified, claims.Name)
+		if errors.Is(err, errSetupDone) {
+			loginError(w, r, "setup_done", nil)
+			return
+		}
+	} else {
+		uid, err = s.linkIdentity(r.Context(), name, claims.Subject, claims.Email, claims.EmailVerified, claims.Name)
+	}
 	if errors.Is(err, errNotInvited) {
 		extra := url.Values{}
 		if claims.Email != "" {

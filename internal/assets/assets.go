@@ -1,6 +1,6 @@
 // Package assets embeds the built React SPA (produced by `vite build` into
-// internal/assets/dist). The committed placeholder lets `go build` succeed
-// before the frontend is built; a real build overwrites it.
+// internal/assets/dist). Only dist/.gitkeep is committed, so `go build` works
+// before the frontend is built; the server then shows a "not built" page.
 package assets
 
 import "embed"

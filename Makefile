@@ -1,4 +1,4 @@
-.PHONY: setup web build run dev-api dev-web docker db demo link test tidy
+.PHONY: setup web build run dev-api dev-web docker db demo link claim users test tidy
 
 # Load .env (if present) so the binary uses the same settings as docker compose.
 -include .env
@@ -35,8 +35,15 @@ dev-web: web/node_modules ## Vite dev server on :5173 (proxies /api to :8080)
 demo:         ## seed the demo "search" business and simulate 14 days of traffic
 	go run ./cmd/libra demo
 
-link:         ## print a one-time sign-in link for the admin
-	go run ./cmd/libra sign-in-link $${LIBRA_ADMIN_USER:-admin}
+link:         ## one-time sign-in link: make link user=<username>
+	@test -n "$(user)" || (echo "usage: make link user=<username>   (see: make users)"; exit 1)
+	@go run ./cmd/libra sign-in-link $(user)
+
+claim:        ## print a new owner setup link (new install only)
+	@go run ./cmd/libra setup-link
+
+users:        ## list accounts (username, email, role)
+	@go run ./cmd/libra list-users
 
 test:         ## unit tests (+ integration tests when LIBRA_TEST_DATABASE_URL is set)
 	go test ./...

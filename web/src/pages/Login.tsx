@@ -11,9 +11,10 @@ const ERRORS: Record<string, string> = {
   unavailable: "That sign-in option isn't available.",
   not_invited: "There's no Libra account for that email.",
   rate_limited: "Too many attempts. Wait a minute and try again.",
+  setup_done: "Libra already has an owner. Sign in normally, or ask the owner for an invitation.",
 };
 
-function Brand() {
+export function Brand() {
   return (
     <div className="brand" style={{ padding: 0, fontSize: 20 }}>
       <img src="/icon.svg" alt="" style={{ width: 32, height: 32 }} />
@@ -26,10 +27,14 @@ export default function Login() {
   const { user, loading } = useAuth();
   const [params] = useSearchParams();
   const [providers, setProviders] = useState<string[] | null>(null);
+  const [setupNeeded, setSetupNeeded] = useState(false);
   useEffect(() => {
     api
       .providers()
-      .then((r) => setProviders(r.providers))
+      .then((r) => {
+        setProviders(r.providers);
+        setSetupNeeded(r.setup_needed);
+      })
       .catch(() => setProviders([]));
   }, []);
   if (!loading && user) return <Navigate to="/" replace />;
@@ -43,19 +48,20 @@ export default function Login() {
         {code && (
           <div className="alert alert-bad">
             {ERRORS[code] ?? ERRORS.failed}
-            {code === "not_invited" && email && (
-              <div className="small">
-                Signed in as {email}. Ask an admin to invite this address. If you run this Libra, set <code>LIBRA_ADMIN_EMAIL={email}</code> in{" "}
-                <code>.env</code> and restart, or run <code>make link</code> for a one-time sign-in link.
-              </div>
-            )}
+            {code === "not_invited" && email && <div className="small">Signed in as {email}. Ask an admin to invite this exact address.</div>}
+          </div>
+        )}
+        {setupNeeded && (
+          <div className="alert alert-warn small">
+            Libra hasn't been set up yet. Open the owner setup link printed in the server's log (or run <code>libra setup-link</code> on the server).
           </div>
         )}
         {providers === null ? (
           <p className="faint">Loading…</p>
         ) : providers.length === 0 ? (
           <div className="alert alert-info small">
-            No sign-in provider is configured yet. On the server, run <code>libra sign-in-link admin</code> and open the link it prints.
+            No sign-in option is set up yet. Add <code>LIBRA_GOOGLE_CLIENT_ID</code> and <code>LIBRA_GOOGLE_CLIENT_SECRET</code> to <code>.env</code> and
+            restart, or run <code>libra sign-in-link &lt;username&gt;</code> on the server.
           </div>
         ) : (
           <div className="stack-sm">
