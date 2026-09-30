@@ -55,12 +55,18 @@ export default function Experiments() {
                 </button>
               ))}
             </div>
-            <select className="input" style={{ width: 170 }} value={business} onChange={(e) => set("business", e.target.value)}>
+            <select className="input" style={{ width: 220 }} value={business} onChange={(e) => set("business", e.target.value)}>
               <option value="">All businesses</option>
-              {businesses.data?.map((b) => (
-                <option key={b.id} value={b.key}>
-                  {b.name}
-                </option>
+              {Array.from(new Set((businesses.data ?? []).map((b) => b.platform_name))).map((p) => (
+                <optgroup key={p} label={p}>
+                  {businesses.data
+                    ?.filter((b) => b.platform_name === p)
+                    .map((b) => (
+                      <option key={b.id} value={String(b.id)}>
+                        {b.name}
+                      </option>
+                    ))}
+                </optgroup>
               ))}
             </select>
           </div>
@@ -106,7 +112,9 @@ export default function Experiments() {
                     <td>
                       <StatusBadge status={e.status} />
                     </td>
-                    <td>{e.business_name}</td>
+                    <td>
+                      {e.business_name} <span className="faint small">· {e.platform_name}</span>
+                    </td>
                     <td className="faint">{e.layer_auto ? "dedicated" : e.layer_name}</td>
                     <td className="num">{e.status === "active" || e.status === "paused" ? trafficPct(e.traffic_held) : <span className="faint">{trafficPct(e.traffic_target)}</span>}</td>
                     <td className="num">{fmtInt(e.units)}</td>

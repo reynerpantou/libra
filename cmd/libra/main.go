@@ -303,7 +303,7 @@ const usage = `usage:
   libra api-key <name> <scope>[,<scope>]       create an API key (scopes: runtime, ingest)
   libra pipeline                               run the data pipeline once
   libra demo [-users N] [-days N]              seed the demo platform (search + reco), simulate traffic, run the pipeline
-  libra simulate [-business K] [-users N] [-days N] [-seed S]
+  libra simulate [-platform P] [-business K] [-users N] [-days N] [-seed S]
                                                generate more synthetic traffic for a business`
 
 func runCommand(db *sql.DB, cfg config.Config, cmd string, args []string) error {
@@ -372,6 +372,7 @@ func runCommand(db *sql.DB, cfg config.Config, cmd string, args []string) error 
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		users := fs.Int("users", 20000, "simulated users")
 		days := fs.Int("days", 14, "days of history (max 30)")
+		platform := fs.String("platform", "shop", "platform key")
 		business := fs.String("business", "search", "business key")
 		seed := fs.Int64("seed", time.Now().UnixNano(), "random seed")
 		if err := fs.Parse(args); err != nil {
@@ -389,7 +390,7 @@ func runCommand(db *sql.DB, cfg config.Config, cmd string, args []string) error 
 			}
 		}
 		fmt.Printf("simulating %d users over %d days...\n", *users, *days)
-		st, err := simulate.Generate(ctx, db, simulate.Options{Business: *business, Users: *users, Days: *days, Seed: *seed})
+		st, err := simulate.Generate(ctx, db, simulate.Options{Platform: *platform, Business: *business, Users: *users, Days: *days, Seed: *seed})
 		if err != nil {
 			return err
 		}

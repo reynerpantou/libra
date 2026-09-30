@@ -80,13 +80,13 @@ function Live() {
   const [business, setBusiness] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
   const all = list.data ?? [];
-  const businesses = useMemo(() => Array.from(new Set(all.map((v) => v.business))).sort(), [all]);
+  const businesses = useMemo(() => Array.from(new Set(all.map((v) => `${v.platform}/${v.business}`))).sort(), [all]);
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     return all.filter(
       (v) =>
         (status === "all" || v.status === status) &&
-        (!business || v.business === business) &&
+        (!business || `${v.platform}/${v.business}` === business) &&
         (!s || v.path.toLowerCase().includes(s) || v.experiment.toLowerCase().includes(s) || show(v.value).toLowerCase().includes(s))
     );
   }, [all, q, status, business]);
@@ -240,7 +240,7 @@ function ValueCells({ v }: { v: ParamValue }) {
       <td>
         <Link to={`/experiments/${v.experiment_id}?tab=overview`}>{v.experiment}</Link>
         <div className="row small faint" style={{ gap: 6 }}>
-          <StatusBadge status={v.status} /> {v.business}
+          <StatusBadge status={v.status} /> {v.platform} › {v.business}
         </div>
       </td>
       <td className="nowrap">
@@ -336,12 +336,12 @@ function Launched() {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<{ f: LaunchedField; anchor: HTMLElement } | null>(null);
   const bs = data.data?.businesses ?? [];
-  const cur = bs.find((b) => b.business === biz) ?? bs[0];
+  const cur = bs.find((b) => b.key === biz) ?? bs[0];
   const query = q.trim().toLowerCase();
   const fields = (cur?.fields ?? []).filter(
     (f) => !query || f.path.toLowerCase().includes(query) || f.experiment.toLowerCase().includes(query) || show(f.value).toLowerCase().includes(query)
   );
-  const history = (data.data?.history ?? []).filter((h) => !cur || h.business === cur.business);
+  const history = (data.data?.history ?? []).filter((h) => !cur || (h.platform === cur.platform && h.business === cur.business));
 
   const renderNode = (n: LNode, indent: number): ReactNode => {
     const pad = "  ".repeat(indent);
@@ -399,9 +399,9 @@ function Launched() {
         <>
           <div className="card card-pad">
             <div className="row" style={{ gap: 10 }}>
-              <select className="input" style={{ width: 200 }} value={cur?.business} onChange={(e) => setBiz(e.target.value)}>
+              <select className="input" style={{ width: 240 }} value={cur?.key} onChange={(e) => setBiz(e.target.value)}>
                 {bs.map((b) => (
-                  <option key={b.business} value={b.business}>
+                  <option key={b.key} value={b.key}>
                     {b.name} ({b.fields.length} fields)
                   </option>
                 ))}

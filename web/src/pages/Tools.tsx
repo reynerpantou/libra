@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ErrorBox, Field, Loading, StatusBadge, Tabs } from "../components/ui";
 import { api } from "../lib/api";
@@ -15,6 +15,8 @@ const outcomeText: Record<string, [string, string]> = {
   targeting_failed: ["Targeting excluded", "b-warn"],
   missing_id: ["Missing id", "b-warn"],
   other_business: ["Other business", ""],
+  other_platform: ["Other platform", ""],
+  not_in_rollout: ["Not in launch rollout yet", ""],
 };
 
 export default function Tools() {
@@ -43,12 +45,18 @@ export default function Tools() {
 function Diagnose() {
   const diversions = useDiversions();
   const [ids, setIds] = useState<Record<string, string>>({});
+  const [platform, setPlatform] = useState("");
   const [business, setBusiness] = useState("");
   const [attrs, setAttrs] = useState('{\n  "region": "ID",\n  "os": "android"\n}');
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<{ version: number; hits: Hit[]; params: Record<string, unknown>; trace: Step[] } | null>(null);
-  const businesses = useAsync(() => api.businesses(), []);
+  const platforms = useAsync(() => api.platforms(), []);
+  const plat = platforms.data?.find((p) => p.key === platform);
+  // With one platform there's nothing to choose.
+  useEffect(() => {
+    if (!platform && platforms.data?.length === 1) setPlatform(platforms.data[0].key);
+  }, [platforms.data, platform]);
   const run = async () => {
     setError("");
     let parsed: Record<string, unknown> = {};
@@ -60,7 +68,7 @@ function Diagnose() {
     }
     setBusy(true);
     try {
-      const r = await api.diagnose(ids, business, parsed);
+      const r = await api.diagnose(ids, platform, business, parsed);
       setRes({ version: r.snapshot_version, ...r.result, trace: r.result.trace ?? [] });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -81,16 +89,38 @@ function Diagnose() {
             />
           </Field>
         ))}
-        <Field label="Business">
-          <select className="input" value={business} onChange={(e) => setBusiness(e.target.value)}>
-            <option value="">All</option>
-            {businesses.data?.map((b) => (
-              <option key={b.id} value={b.key}>
-                {b.name}
-              </option>
-            ))}
-          </select>
-        </Field>
+        <div className="grid-2">
+          <Field label="Platform" hint="What the service sends as platform.">
+            <select
+              className="input"
+              value={platform}
+              onChange={(e) => {
+                setPlatform(e.target.value);
+                setBusiness("");
+              }}
+            >
+              <option value="">All (debug only)</option>
+              {platforms.data?.map((p) => (
+                <option key={p.id} value={p.key}>
+                  {p.name} ({p.key})
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Business" hint="Optional: only its experiments.">
+            <select className="input" value={business} onChange={(e) => setBusiness(e.target.value)} disabled={!plat}>
+              <option value="">All of the platform</option>
+              {plat?.businesses.map((b) => (
+                <option key={b.id} value={b.key}>
+                  {b.name} ({b.key})
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        {!platform && (platforms.data?.length ?? 0) > 1 && (
+          <div className="small faint">The runtime API needs a platform when there are several; here "All" shows every platform's experiments for debugging.</div>
+        )}
         <Field label="Request attributes (JSON)" hint="Targeting rules are checked against these.">
           <textarea className="input input-mono" rows={6} value={attrs} onChange={(e) => setAttrs(e.target.value)} />
         </Field>
@@ -120,7 +150,7 @@ function Diagnose() {
                         <td>
                           <Link to={`/experiments/${s.experiment_id}`}>{s.experiment}</Link>
                           <div className="row small faint" style={{ gap: 6 }}>
-                            <StatusBadge status={s.status} /> {s.business}
+                            <StatusBadge status={s.status} /> {s.platform} › {s.business}
                           </div>
                         </td>
                         <td>
@@ -170,7 +200,9 @@ function Params() {
             <tr key={i}>
               <td className="mono">{h.path}</td>
               <td>
-                <Link to={`/experiments/${h.experiment_id}`}>{h.experiment}</Link> <span className="faint small">{h.business}</span>
+                <Link to={`/experiments/${h.experiment_id}`}>{h.experiment}</Link> <span className="faint small">
+                  {h.platform} › {h.business}
+                </span>
               </td>
               <td className="mono">{h.variant}</td>
               <td>

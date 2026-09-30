@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -305,5 +306,34 @@ func TestGradualLaunch(t *testing.T) {
 	r := mk(300).Resolve(Request{}, true)
 	if len(r.Hits) != 0 || r.Trace[0].Outcome != "missing_id" {
 		t.Errorf("partial launch without an id: %+v", r)
+	}
+}
+
+func TestPlatformScope(t *testing.T) {
+	tiktok := &Experiment{ID: 1, LayerID: 1, Name: "tt", PlatformKey: "tiktok", BusinessKey: "search", Status: StatusLaunched, LaunchedVar: 2, Variants: twoVariants()}
+	toko := &Experiment{ID: 2, LayerID: 1, Name: "tk", PlatformKey: "toko", BusinessKey: "search", Status: StatusLaunched, LaunchedVar: 2, Variants: twoVariants()}
+	s := NewSnapshot(1, []*Layer{{ID: 1, Salt: "1"}}, []*Experiment{tiktok, toko})
+	s.Platforms = map[string][]string{"tiktok": {"ads", "search"}, "toko": {"search"}}
+
+	for _, c := range []struct {
+		platform, business string
+		wantP, wantErr     string
+	}{
+		{"tiktok", "", "tiktok", ""},
+		{"tiktok", "search", "tiktok", ""},
+		{"", "ads", "tiktok", ""}, // only one platform has it
+		{"", "search", "", "several platforms"},
+		{"", "", "", "send platform"},
+		{"nope", "", "", "unknown platform"},
+		{"toko", "ads", "", "has no business"},
+	} {
+		p, _, msg := s.Scope(c.platform, c.business)
+		if p != c.wantP || (c.wantErr == "") != (msg == "") || !strings.Contains(msg, c.wantErr) {
+			t.Errorf("Scope(%q, %q) = %q, %q", c.platform, c.business, p, msg)
+		}
+	}
+	r := s.Resolve(Request{UserID: "u", Platform: "toko", Business: "search"}, false)
+	if len(r.Hits) != 1 || r.Hits[0].ExperimentID != 2 {
+		t.Errorf("platform filter: %+v", r.Hits)
 	}
 }

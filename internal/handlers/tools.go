@@ -27,6 +27,16 @@ func (s *Server) Diagnose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snap := s.Store.Snapshot()
+	// Diagnose may look across everything; a platform or business given
+	// is checked the same way the runtime API checks it.
+	if req.Platform != "" || req.Business != "" {
+		platform, business, msg := snap.Scope(req.Platform, req.Business)
+		if msg != "" {
+			badRequest(w, msg)
+			return
+		}
+		req.Platform, req.Business = platform, business
+	}
 	res := snap.Resolve(req, true)
 	writeJSON(w, http.StatusOK, map[string]any{"snapshot_version": snap.Version, "result": res})
 }
@@ -37,6 +47,7 @@ func (s *Server) ParamSearch(w http.ResponseWriter, r *http.Request) {
 	type hit struct {
 		ExperimentID int64  `json:"experiment_id"`
 		Experiment   string `json:"experiment"`
+		Platform     string `json:"platform"`
 		Business     string `json:"business"`
 		Status       string `json:"status"`
 		Variant      string `json:"variant"`
@@ -47,7 +58,7 @@ func (s *Server) ParamSearch(w http.ResponseWriter, r *http.Request) {
 		for _, v := range e.Variants {
 			for _, p := range assign.ParamPaths(v.Params) {
 				if q == "" || strings.Contains(strings.ToLower(p), q) {
-					out = append(out, hit{e.ID, e.Name, e.BusinessKey, e.Status, v.Key, p})
+					out = append(out, hit{e.ID, e.Name, e.PlatformKey, e.BusinessKey, e.Status, v.Key, p})
 				}
 			}
 		}

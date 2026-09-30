@@ -19,9 +19,10 @@ const MaxBatch = 5000
 type resolveRequest struct {
 	UserID   string            `json:"user_id,omitempty"`
 	DeviceID string            `json:"device_id,omitempty"`
-	IDs      map[string]string `json:"ids,omitempty"`     // other diversions, e.g. {"shop_id": "s-1"}
-	UnitID   string            `json:"unit_id,omitempty"` // older name for user_id
-	Business string            `json:"business,omitempty"`
+	IDs      map[string]string `json:"ids,omitempty"`      // other diversions, e.g. {"shop_id": "s-1"}
+	UnitID   string            `json:"unit_id,omitempty"`  // older name for user_id
+	Platform string            `json:"platform,omitempty"` // required when there are several platforms
+	Business string            `json:"business,omitempty"` // optional: only this business's experiments
 	Attrs    map[string]any    `json:"attrs,omitempty"`
 	// LogExposure records exposures (default true). Set false when the
 	// caller only prefetches config and will report exposures itself.
@@ -32,6 +33,8 @@ type resolveRequest struct {
 type resolveResponse struct {
 	UserID          string            `json:"user_id,omitempty"`
 	DeviceID        string            `json:"device_id,omitempty"`
+	Platform        string            `json:"platform,omitempty"`
+	Business        string            `json:"business,omitempty"`
 	SnapshotVersion int64             `json:"snapshot_version"`
 	Params          map[string]any    `json:"params"`
 	Hits            []assign.Hit      `json:"hits"`
@@ -56,7 +59,12 @@ func (s *Server) Resolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snap := s.Store.Snapshot()
-	res := snap.Resolve(assign.Request{UserID: req.UserID, DeviceID: req.DeviceID, IDs: req.IDs, Business: req.Business, Attrs: req.Attrs}, req.Debug)
+	platform, business, msg := snap.Scope(strings.TrimSpace(req.Platform), strings.TrimSpace(req.Business))
+	if msg != "" {
+		badRequest(w, msg)
+		return
+	}
+	res := snap.Resolve(assign.Request{UserID: req.UserID, DeviceID: req.DeviceID, IDs: req.IDs, Platform: platform, Business: business, Attrs: req.Attrs}, req.Debug)
 	if req.LogExposure == nil || *req.LogExposure {
 		now := time.Now().UTC()
 		attrs := serving.DimensionAttrs(req.Attrs)
@@ -67,7 +75,7 @@ func (s *Server) Resolve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resolveResponse{
-		UserID: req.UserID, DeviceID: req.DeviceID, SnapshotVersion: snap.Version, Params: res.Params, Hits: res.Hits,
+		UserID: req.UserID, DeviceID: req.DeviceID, Platform: platform, Business: business, SnapshotVersion: snap.Version, Params: res.Params, Hits: res.Hits,
 		Conflicts: res.Conflicts, Trace: res.Trace,
 	})
 }
@@ -139,6 +147,7 @@ func (s *Server) IngestExposures(w http.ResponseWriter, r *http.Request) {
 }
 
 type eventIn struct {
+	Platform string            `json:"platform,omitempty"` // needed when the business key exists on several platforms
 	Business string            `json:"business"`
 	Event    string            `json:"event"`
 	UserID   string            `json:"user_id,omitempty"`
@@ -169,7 +178,7 @@ func (s *Server) IngestEvents(w http.ResponseWriter, r *http.Request) {
 	var batch []serving.Event
 	var rejected []map[string]any
 	for i, x := range req.Events {
-		bid, err := s.businessID(r.Context(), x.Business)
+		bid, bizErr, err := s.businessID(r.Context(), strings.TrimSpace(x.Platform), strings.TrimSpace(x.Business))
 		if err != nil {
 			serverError(w, r, err)
 			return
@@ -184,7 +193,7 @@ func (s *Server) IngestEvents(w http.ResponseWriter, r *http.Request) {
 		var obj map[string]any
 		switch {
 		case bid == 0:
-			rejected = append(rejected, map[string]any{"index": i, "error": "unknown business " + x.Business})
+			rejected = append(rejected, map[string]any{"index": i, "error": bizErr})
 			continue
 		case name == "" || len(name) > 120:
 			rejected = append(rejected, map[string]any{"index": i, "error": "event is required"})
@@ -230,34 +239,56 @@ func rejectedOrEmpty(r []map[string]any) []map[string]any {
 	return r
 }
 
-// business keys are cached briefly: ingestion is hot, businesses rarely change.
+// Businesses are cached briefly: ingestion is hot, businesses rarely change.
 var bizCache struct {
 	sync.Mutex
-	ids    map[string]int64
+	ids    map[string]int64   // "platform/business" -> id
+	byKey  map[string][]int64 // business key -> ids (one per platform that has it)
 	loaded time.Time
 }
 
-func (s *Server) businessID(ctx context.Context, key string) (int64, error) {
+// businessID finds the business an event belongs to. A key alone works
+// when only one platform has it; otherwise the platform is needed. The
+// string is why it wasn't found.
+func (s *Server) businessID(ctx context.Context, platform, key string) (int64, string, error) {
 	bizCache.Lock()
 	defer bizCache.Unlock()
-	if bizCache.ids == nil || time.Since(bizCache.loaded) > 30*time.Second || (bizCache.ids[key] == 0 && time.Since(bizCache.loaded) > 2*time.Second) {
-		rows, err := s.DB.QueryContext(ctx, `SELECT key, id FROM businesses`)
+	full := platform + "/" + key
+	missing := (platform != "" && bizCache.ids[full] == 0) || (platform == "" && len(bizCache.byKey[key]) == 0)
+	if bizCache.ids == nil || time.Since(bizCache.loaded) > 30*time.Second || (missing && time.Since(bizCache.loaded) > 2*time.Second) {
+		rows, err := s.DB.QueryContext(ctx, `SELECT p.key, b.key, b.id FROM businesses b JOIN platforms p ON p.id = b.platform_id`)
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		defer rows.Close()
-		ids := map[string]int64{}
+		ids, byKey := map[string]int64{}, map[string][]int64{}
 		for rows.Next() {
-			var k string
+			var p, k string
 			var id int64
-			if err := rows.Scan(&k, &id); err != nil {
-				return 0, err
+			if err := rows.Scan(&p, &k, &id); err != nil {
+				return 0, "", err
 			}
-			ids[k] = id
+			ids[p+"/"+k] = id
+			byKey[k] = append(byKey[k], id)
 		}
-		bizCache.ids, bizCache.loaded = ids, time.Now()
+		bizCache.ids, bizCache.byKey, bizCache.loaded = ids, byKey, time.Now()
 	}
-	return bizCache.ids[key], nil
+	if key == "" {
+		return 0, "business is required", nil
+	}
+	if platform != "" {
+		if id := bizCache.ids[full]; id != 0 {
+			return id, "", nil
+		}
+		return 0, fmt.Sprintf("platform %s has no business %s", platform, key), nil
+	}
+	switch ids := bizCache.byKey[key]; len(ids) {
+	case 0:
+		return 0, "unknown business " + key, nil
+	case 1:
+		return ids[0], "", nil
+	}
+	return 0, "business " + key + " exists on several platforms; send platform too", nil
 }
 
 // checkIDs validates a request's ids: at least one, each reasonably short.

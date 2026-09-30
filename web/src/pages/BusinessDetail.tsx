@@ -47,7 +47,7 @@ export default function BusinessDetail() {
           </div>
           <p>{b.description}</p>
         </div>
-        <Link className="btn" to={`/experiments?business=${b.key}`}>
+        <Link className="btn" to={`/experiments?business=${b.id}`}>
           View experiments
         </Link>
       </div>

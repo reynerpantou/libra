@@ -177,7 +177,8 @@ func insertScope(ctx context.Context, tx *sql.Tx, sc scopeSpec, businessID, plat
 // experiments.
 func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM businesses WHERE key IN ('search', 'reco')`).Scan(&n); err != nil {
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM businesses b JOIN platforms p ON p.id = b.platform_id WHERE p.key = $1 AND b.key IN ('search', 'reco')`, demoPlatform.key).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {
@@ -445,6 +446,7 @@ func orEmpty(f []map[string]any) []map[string]any {
 
 // Options control traffic generation.
 type Options struct {
+	Platform string // platform key (default "shop")
 	Business string // business key events are sent to (default "search")
 	Users    int
 	Days     int // days of history, ending today
@@ -489,14 +491,18 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 		o.Days = 30
 	}
 	var bid int64
-	if err := db.QueryRowContext(ctx, `SELECT id FROM businesses WHERE key = $1`, o.Business).Scan(&bid); err != nil {
-		return Stats{}, fmt.Errorf("business %q: %w", o.Business, err)
+	if o.Platform == "" {
+		o.Platform = demoPlatform.key
+	}
+	const bizQuery = `SELECT b.id FROM businesses b JOIN platforms p ON p.id = b.platform_id WHERE p.key = $1 AND b.key = $2`
+	if err := db.QueryRowContext(ctx, bizQuery, o.Platform, o.Business).Scan(&bid); err != nil {
+		return Stats{}, fmt.Errorf("business %s/%s: %w", o.Platform, o.Business, err)
 	}
 	// Feed activity goes to the demo recommendation business when it's
 	// there (and the simulation runs for search); otherwise it stays in bid.
 	feedBID := bid
 	if o.Business == "search" {
-		_ = db.QueryRowContext(ctx, `SELECT id FROM businesses WHERE key = 'reco'`).Scan(&feedBID)
+		_ = db.QueryRowContext(ctx, bizQuery, o.Platform, "reco").Scan(&feedBID)
 	}
 	var version int64
 	if err := db.QueryRowContext(ctx, `SELECT version FROM config_version`).Scan(&version); err != nil {
@@ -575,7 +581,7 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 			if feedBID != bid {
 				business = "" // search and reco experiments
 			}
-			res := snap.Resolve(assign.Request{UserID: u.id, DeviceID: u.device, Business: business, Attrs: u.attrs}, false)
+			res := snap.Resolve(assign.Request{UserID: u.id, DeviceID: u.device, Platform: o.Platform, Business: business, Attrs: u.attrs}, false)
 			fx := effects(res.Params, u.attrs)
 			for _, h := range res.Hits {
 				key := fmt.Sprintf("%d:%s", h.ExperimentID, h.UnitID)

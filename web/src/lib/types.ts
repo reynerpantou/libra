@@ -140,6 +140,7 @@ export interface LaunchedField {
 export interface LaunchRecord {
   experiment_id: number;
   experiment: string;
+  platform: string;
   business: string;
   status: Status;
   variant: string;
@@ -165,6 +166,7 @@ export interface ParamValue {
   value: unknown;
   experiment_id: number;
   experiment: string;
+  platform: string;
   business: string;
   status: Status;
   variant_key: string;
@@ -258,6 +260,9 @@ export interface Experiment {
   business_id: number;
   business_key: string;
   business_name: string;
+  platform_id: number;
+  platform_key: string;
+  platform_name: string;
   layer_id: number;
   layer_name: string;
   name: string;
@@ -397,6 +402,7 @@ export interface Hit {
 export interface Step {
   experiment_id: number;
   experiment: string;
+  platform: string;
   business: string;
   status: Status;
   outcome: string;
