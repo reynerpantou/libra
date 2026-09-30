@@ -198,18 +198,25 @@ func seedOwner(db *sql.DB, cfg config.Config) error {
 	if cfg.AdminEmail != "" {
 		email = cfg.AdminEmail
 	}
-	if n > 0 {
-		if email != nil {
-			_, err := db.Exec(`UPDATE users SET email = $1 WHERE is_owner AND email IS NULL`, email)
+	if n == 0 {
+		if _, err := db.Exec(`INSERT INTO users (username, email, role, is_owner) VALUES ($1, $2, 'admin', true)`, cfg.AdminUser, email); err != nil {
 			return err
 		}
-		return nil
+		log.Printf("created owner account %q", cfg.AdminUser)
+	} else if email != nil {
+		res, err := db.Exec(`UPDATE users SET email = $1 WHERE is_owner AND email IS NULL`, email)
+		if err != nil {
+			return err
+		}
+		if k, _ := res.RowsAffected(); k > 0 {
+			log.Printf("owner email set to %s from LIBRA_ADMIN_EMAIL", cfg.AdminEmail)
+		}
 	}
-	if _, err := db.Exec(`INSERT INTO users (username, email, role, is_owner) VALUES ($1, $2, 'admin', true)`, cfg.AdminUser, email); err != nil {
-		return err
-	}
-	if email == nil {
-		log.Printf("created owner %q — run `libra sign-in-link %s` to sign in, or set LIBRA_ADMIN_EMAIL", cfg.AdminUser, cfg.AdminUser)
+	// Keep reminding until the owner can actually sign in with Google/Apple.
+	var owner string
+	var ownerEmail sql.NullString
+	if err := db.QueryRow(`SELECT username, email FROM users WHERE is_owner`).Scan(&owner, &ownerEmail); err == nil && !ownerEmail.Valid {
+		log.Printf("the owner %q has no email, so nobody can sign in with Google/Apple yet: set LIBRA_ADMIN_EMAIL=<your email> in .env and restart, or run `libra sign-in-link %s` (make link)", owner, owner)
 	}
 	return nil
 }

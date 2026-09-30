@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import ProviderIcon from "../components/ProviderIcon";
 
 const ERRORS: Record<string, string> = {
   cancelled: "Sign-in was cancelled.",
@@ -42,7 +43,12 @@ export default function Login() {
         {code && (
           <div className="alert alert-bad">
             {ERRORS[code] ?? ERRORS.failed}
-            {code === "not_invited" && email && <div className="small">Signed in as {email}. Ask an admin to invite this address.</div>}
+            {code === "not_invited" && email && (
+              <div className="small">
+                Signed in as {email}. Ask an admin to invite this address. If you run this Libra, set <code>LIBRA_ADMIN_EMAIL={email}</code> in{" "}
+                <code>.env</code> and restart, or run <code>make link</code> for a one-time sign-in link.
+              </div>
+            )}
           </div>
         )}
         {providers === null ? (
@@ -54,7 +60,9 @@ export default function Login() {
         ) : (
           <div className="stack-sm">
             {providers.map((p) => (
-              <a key={p} className="btn" href={`/api/auth/${p}/start`} style={{ height: 40 }}>
+              // A real navigation, not fetch: the browser has to visit the provider's page.
+              <a key={p} className={`btn provider-btn provider-${p}`} href={`/api/auth/${p}/start`}>
+                <ProviderIcon provider={p} />
                 Continue with {p === "google" ? "Google" : "Apple"}
               </a>
             ))}

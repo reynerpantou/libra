@@ -309,3 +309,12 @@ pre.code {
 .pill-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .diag-ok { color: var(--good); }
 .diag-no { color: var(--text-3); }
+
+/* ---- sign-in buttons (per Google / Apple brand guidelines) ---- */
+.provider-btn { display: flex; align-items: center; justify-content: center; gap: 10px; height: 42px; font-weight: 600; }
+.provider-btn:hover { text-decoration: none; }
+.provider-icon { width: 18px; height: 18px; flex: none; }
+.provider-google { background: #fff; color: #1f1f1f; border: 1px solid #dadce0; }
+.provider-google:hover:not(:disabled) { background: #f2f2f2; }
+.provider-apple { background: #000; color: #fff; border: 1px solid #3d4453; }
+.provider-apple:hover:not(:disabled) { background: #111; }
