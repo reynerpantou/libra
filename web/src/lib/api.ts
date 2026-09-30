@@ -3,7 +3,12 @@ import type {
   Attribute,
   AttrType,
   Diversion,
+  DiversionDef,
+  MetricBrief,
   ParamUse,
+  ParamValue,
+  Platform,
+  Scope,
   Targeting,
   AuditEntry,
   Business,
@@ -76,6 +81,9 @@ const qs = (p: Record<string, string | number | undefined | null>) => {
   return out ? `?${out}` : "";
 };
 
+// The API prefix of a definitions scope.
+export const scopePath = (s: Scope) => (s.kind === "platform" ? `/platforms/${s.id}` : `/businesses/${s.id}`);
+
 export interface ExperimentInput {
   business_id: number;
   layer_id: number;
@@ -85,11 +93,14 @@ export interface ExperimentInput {
   owner_id: number | null;
   traffic_target: number;
   targeting: Targeting;
-  metric_group_id: number | null;
+  metric_group_ids: number[];
+  auto_diversion?: string; // set: a dedicated layer at 100%, split by this diversion
   variants: Variant[];
 }
 
-export type MeasureInput = Omit<Measure, "id" | "business_id" | "pending_backfill" | "used_by" | "filters_text">;
+export type MeasureInput = Omit<Measure, "id" | "business_id" | "platform_id" | "inherited" | "pending_backfill" | "used_by" | "filters_text">;
+export type GroupInput = { name: string; description: string; is_default: boolean; metric_ids: number[] };
+type BusinessInput = { platform_id: number; key: string; name: string; description: string; require_review: boolean };
 export type MetricInput = Pick<Metric, "key" | "name" | "description" | "formula" | "format" | "decimals" | "direction">;
 
 export const api = {
@@ -110,38 +121,40 @@ export const api = {
 
   businesses: () => request<Business[]>("GET", "/businesses"),
   business: (id: number) => request<Business>("GET", `/businesses/${id}`),
-  createBusiness: (b: { key: string; name: string; description: string; require_review: boolean }) =>
-    request<Business>("POST", "/businesses", b),
-  updateBusiness: (id: number, b: { key: string; name: string; description: string; require_review: boolean }) =>
-    request<Business>("PUT", `/businesses/${id}`, b),
+  createBusiness: (b: BusinessInput) => request<Business>("POST", "/businesses", b),
+  updateBusiness: (id: number, b: BusinessInput) => request<Business>("PUT", `/businesses/${id}`, b),
+  platforms: () => request<Platform[]>("GET", "/platforms"),
+  platform: (id: number) => request<Platform>("GET", `/platforms/${id}`),
+  createPlatform: (p: { key: string; name: string; description: string }) => request<Platform>("POST", "/platforms", p),
+  updatePlatform: (id: number, p: { key: string; name: string; description: string }) => request<Platform>("PUT", `/platforms/${id}`, p),
 
-  measures: (bid: number) => request<Measure[]>("GET", `/businesses/${bid}/measures`),
-  createMeasure: (bid: number, m: MeasureInput) => request<Measure>("POST", `/businesses/${bid}/measures`, m),
+  measures: (sc: Scope) => request<Measure[]>("GET", `${scopePath(sc)}/measures`),
+  createMeasure: (sc: Scope, m: MeasureInput) => request<Measure>("POST", `${scopePath(sc)}/measures`, m),
   updateMeasure: (id: number, m: MeasureInput) => request<Measure>("PUT", `/measures/${id}`, m),
   deleteMeasure: (id: number) => request<void>("DELETE", `/measures/${id}`),
 
-  metrics: (bid: number) => request<Metric[]>("GET", `/businesses/${bid}/metrics`),
-  createMetric: (bid: number, m: MetricInput) => request<Metric>("POST", `/businesses/${bid}/metrics`, m),
+  metrics: (sc: Scope) => request<Metric[]>("GET", `${scopePath(sc)}/metrics`),
+  allMetrics: () => request<MetricBrief[]>("GET", "/metrics"),
+  createMetric: (sc: Scope, m: MetricInput) => request<Metric>("POST", `${scopePath(sc)}/metrics`, m),
   updateMetric: (id: number, m: MetricInput) => request<Metric>("PUT", `/metrics/${id}`, m),
   deleteMetric: (id: number) => request<void>("DELETE", `/metrics/${id}`),
-  validateFormula: (bid: number, formula: string, key: string) =>
+  validateFormula: (sc: Scope, formula: string, key: string) =>
     request<{ ok: boolean; error?: string; expanded?: string; kind?: string; measures?: string[] }>(
       "POST",
-      `/businesses/${bid}/formula/validate`,
+      `${scopePath(sc)}/formula/validate`,
       { formula, key }
     ),
-  previewFormula: (bid: number, formula: string, days: number) =>
+  previewFormula: (sc: Scope, formula: string, days: number) =>
     request<{ ok: boolean; error?: string; value?: number | null; users?: number; measures?: Record<string, number>; from?: string; to?: string; kind?: string }>(
       "POST",
-      `/businesses/${bid}/formula/preview`,
+      `${scopePath(sc)}/formula/preview`,
       { formula, days }
     ),
 
-  groups: (bid: number) => request<MetricGroup[]>("GET", `/businesses/${bid}/metric-groups`),
-  createGroup: (bid: number, g: { name: string; description: string; metric_ids: number[] }) =>
-    request<MetricGroup>("POST", `/businesses/${bid}/metric-groups`, g),
-  updateGroup: (id: number, g: { name: string; description: string; metric_ids: number[] }) =>
-    request<MetricGroup>("PUT", `/metric-groups/${id}`, g),
+  groups: (sc: Scope) => request<MetricGroup[]>("GET", `${scopePath(sc)}/metric-groups`),
+  allGroups: () => request<MetricGroup[]>("GET", "/metric-groups"),
+  createGroup: (sc: Scope, g: GroupInput) => request<MetricGroup>("POST", `${scopePath(sc)}/metric-groups`, g),
+  updateGroup: (id: number, g: GroupInput) => request<MetricGroup>("PUT", `/metric-groups/${id}`, g),
   deleteGroup: (id: number) => request<void>("DELETE", `/metric-groups/${id}`),
 
   eventSummary: (bid: number) => request<EventSummary>("GET", `/businesses/${bid}/events/summary`),
@@ -168,7 +181,7 @@ export const api = {
   removeWhitelist: (id: number, unit: string) => request<void>("DELETE", `/experiments/${id}/whitelist/${encodeURIComponent(unit)}`),
   history: (id: number) => request<AuditEntry[]>("GET", `/experiments/${id}/history`),
   clone: (id: number) => request<{ id: number }>("POST", `/experiments/${id}/clone`),
-  report: (id: number, p: { from?: string; to?: string; metrics?: string; dimension?: string; alpha?: string }) =>
+  report: (id: number, p: { from?: string; to?: string; metrics?: string; groups?: string; dimension?: string; alpha?: string }) =>
     request<Report>("GET", `/experiments/${id}/report${qs(p)}`),
   trend: (id: number, metric: number, p: { from?: string; to?: string; alpha?: string }) =>
     request<TrendPoint[]>("GET", `/experiments/${id}/trend${qs({ metric, ...p })}`),
@@ -183,11 +196,23 @@ export const api = {
   deleteAttribute: (id: number) => request<void>("DELETE", `/attributes/${id}`),
   paramUsage: (id: number) => request<{ priority_rules: string[]; paths: Record<string, ParamUse[]> }>("GET", `/experiments/${id}/params`),
 
-  diagnose: (user_id: string, device_id: string, business: string, attrs: Record<string, unknown>) =>
+  diversions: () => request<DiversionDef[]>("GET", "/diversions"),
+  createDiversion: (d: { key: string; name: string; description: string }) => request<DiversionDef>("POST", "/diversions", d),
+  updateDiversion: (key: string, d: { name: string; description: string }) => request<void>("PUT", `/diversions/${key}`, d),
+  deleteDiversion: (key: string) => request<void>("DELETE", `/diversions/${key}`),
+  parameters: () => request<ParamValue[]>("GET", "/parameters"),
+
+  diagnose: (ids: Record<string, string>, business: string, attrs: Record<string, unknown>) =>
     request<{ snapshot_version: number; result: { hits: Hit[]; params: Record<string, unknown>; trace: Step[]; conflicts?: unknown[] } }>(
       "POST",
       "/tools/diagnose",
-      { user_id, device_id, business, attrs }
+      {
+        user_id: ids.user_id ?? "",
+        device_id: ids.device_id ?? "",
+        ids: Object.fromEntries(Object.entries(ids).filter(([k, v]) => k !== "user_id" && k !== "device_id" && v)),
+        business,
+        attrs,
+      }
     ),
   paramSearch: (q: string) =>
     request<{ experiment_id: number; experiment: string; business: string; status: string; variant: string; path: string }[]>(

@@ -80,13 +80,13 @@ func (s *Store) Watch(ctx context.Context, every time.Duration) {
 // Load reads every experiment that can affect serving into a snapshot.
 func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, error) {
 	var layers []*assign.Layer
-	rows, err := db.QueryContext(ctx, `SELECT id, name, salt, diversion FROM layers`) // auto layers included
+	rows, err := db.QueryContext(ctx, `SELECT id, name, salt, diversion, auto FROM layers`) // auto layers included
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		l := &assign.Layer{}
-		if err := rows.Scan(&l.ID, &l.Name, &l.Salt, &l.Diversion); err != nil {
+		if err := rows.Scan(&l.ID, &l.Name, &l.Salt, &l.Diversion, &l.Auto); err != nil {
 			rows.Close()
 			return nil, err
 		}

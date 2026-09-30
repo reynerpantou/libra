@@ -372,8 +372,8 @@ func (req *experimentRequest) validate() string {
 	if err := assign.ValidateTargeting(req.Targeting, nil); err != nil {
 		return err.Error()
 	}
-	if len(req.Variants) < 2 || len(req.Variants) > 10 {
-		return "an experiment needs 2 to 10 variants"
+	if len(req.Variants) < 2 || len(req.Variants) > 20 {
+		return "an experiment needs 2 to 20 variants"
 	}
 	controls, total := 0, 0
 	seen := map[string]bool{}

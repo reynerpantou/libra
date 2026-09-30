@@ -235,6 +235,7 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 	exps := []struct {
 		business, name, hypothesis, layer, status string
 		auto                                      string // diversion of a dedicated (auto) layer
+		launch                                    string // for launched experiments: the winning variant
 		groups                                    []string
 		traffic                                   int
 		targeting                                 assign.Targeting
@@ -242,7 +243,7 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 	}{
 		{
 			"search", "Ranking formula v2", "Adding a price-competitiveness boost to the ranking formula raises CTR and CVR, lifting search GMV per user.",
-			"search_ranking", assign.StatusActive, "", []string{"search/Product", "search/Back end"}, 500,
+			"search_ranking", assign.StatusActive, "", "", []string{"search/Product", "search/Back end"}, 500,
 			assign.Targeting{Groups: [][]assign.Rule{{{Attr: "region", Op: "in", Values: []string{"ID", "SG", "MY", "TH"}}}}},
 			[]variant{
 				{"control", "Current formula", true, 500, map[string]any{"search": map[string]any{"ranking": map[string]any{"formula": "ctr * cvr", "price_boost": 0}}}},
@@ -251,7 +252,7 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 		},
 		{
 			"search", "Ads slot position", "Moving the first ad slot up raises ads GMV without hurting overall search GMV.",
-			"search_ui", assign.StatusActive, "", []string{"search/Ads health"}, 600, assign.Targeting{},
+			"search_ui", assign.StatusActive, "", "", []string{"search/Ads health"}, 600, assign.Targeting{},
 			[]variant{
 				{"control", "Ad at slot 4", true, 340, map[string]any{"search": map[string]any{"ads": map[string]any{"first_slot": 4}}}},
 				{"slot_2", "Ad at slot 2", false, 330, map[string]any{"search": map[string]any{"ads": map[string]any{"first_slot": 2}}}},
@@ -260,7 +261,7 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 		},
 		{
 			"search", "Result card layout", "One of the new result card layouts lifts CTR; the dense ones may hurt conversion.",
-			"", assign.StatusActive, assign.DiversionDevice, []string{"search/Front end", "search/Product", "reco/Product"}, 1000, assign.Targeting{},
+			"", assign.StatusActive, assign.DiversionDevice, "", []string{"search/Front end", "search/Product", "reco/Product"}, 1000, assign.Targeting{},
 			[]variant{
 				{"control", "List (current)", true, 125, card("list", 1)},
 				{"grid_2", "Grid, 2 columns", false, 125, card("grid", 2)},
@@ -274,15 +275,23 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 		},
 		{
 			"reco", "Feed model two-tower", "A two-tower retrieval model raises feed CTR and GMV at a small latency cost.",
-			"feed_ranking", assign.StatusActive, "", []string{"reco/Product"}, 800, assign.Targeting{},
+			"feed_ranking", assign.StatusActive, "", "", []string{"reco/Product"}, 800, assign.Targeting{},
 			[]variant{
 				{"control", "Current model", true, 500, map[string]any{"reco": map[string]any{"model": "gbdt_v7", "candidates": 200}}},
 				{"two_tower", "Two-tower", false, 500, map[string]any{"reco": map[string]any{"model": "two_tower_v1", "candidates": 400}}},
 			},
 		},
 		{
+			"search", "Results per page", "Showing 30 results per page instead of 20 raises clicks without slowing search.",
+			"search_ui", assign.StatusLaunched, "", "thirty", []string{"search/Front end"}, 0, assign.Targeting{},
+			[]variant{
+				{"control", "20 per page", true, 500, map[string]any{"search": map[string]any{"page_size": 20, "ads": map[string]any{"max_per_page": 3}}}},
+				{"thirty", "30 per page", false, 500, map[string]any{"search": map[string]any{"page_size": 30, "ads": map[string]any{"max_per_page": 4}}}},
+			},
+		},
+		{
 			"search", "Query autocomplete", "Showing autocomplete suggestions increases searches per user.",
-			"search_ranking", assign.StatusDraft, "", []string{"search/Front end"}, 300, assign.Targeting{},
+			"search_ranking", assign.StatusDraft, "", "", []string{"search/Front end"}, 300, assign.Targeting{},
 			[]variant{
 				{"control", "No suggestions", true, 500, map[string]any{"search": map[string]any{"autocomplete": false}}},
 				{"treatment", "Suggestions", false, 500, map[string]any{"search": map[string]any{"autocomplete": true}}},
@@ -346,9 +355,16 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 		}
 		for pos, v := range e.variants {
 			params, _ := json.Marshal(v.params)
-			if _, err := tx.ExecContext(ctx, `INSERT INTO variants (experiment_id, key, name, is_control, weight, params, position) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				id, v.key, v.name, v.control, v.weight, params, pos); err != nil {
+			var vid int64
+			if err := tx.QueryRowContext(ctx, `INSERT INTO variants (experiment_id, key, name, is_control, weight, params, position) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+				id, v.key, v.name, v.control, v.weight, params, pos).Scan(&vid); err != nil {
 				return err
+			}
+			if e.launch == v.key {
+				if _, err := tx.ExecContext(ctx, `UPDATE experiments SET launched_variant_id = $2, started_at = $3, ended_at = $4, launched_at = $4 WHERE id = $1`,
+					id, vid, start.AddDate(0, 0, -30), start.AddDate(0, 0, -16)); err != nil {
+					return err
+				}
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO audit_log (experiment_id, entity, entity_id, actor_id, action, to_status, detail) VALUES ($1, 'experiment', $1, $2, 'seed', $3, '{"note":"created by the demo seeder"}')`,

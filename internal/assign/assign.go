@@ -137,7 +137,8 @@ type Layer struct {
 	ID        int64
 	Name      string
 	Salt      string
-	Diversion string // user_id | device_id
+	Diversion string // a diversions key: user_id, device_id, …
+	Auto      bool   // dedicated to one experiment
 	owner     [Buckets]*Experiment
 }
 
@@ -758,5 +759,12 @@ func ParamPaths(params map[string]any) []string {
 		out = append(out, p)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// FlattenParams maps each leaf dot path of a params object to its value.
+func FlattenParams(params map[string]any) map[string]any {
+	out := map[string]any{}
+	flatten("", params, out)
 	return out
 }

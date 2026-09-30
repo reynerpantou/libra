@@ -193,6 +193,7 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	// Tools and pipeline
 	api.Handle("POST /tools/diagnose", viewer(s.Diagnose))
 	api.Handle("GET /tools/params", viewer(s.ParamSearch))
+	api.Handle("GET /parameters", viewer(s.ListParameters))
 	api.Handle("GET /pipeline", viewer(s.PipelineStatus))
 	api.Handle("POST /pipeline/run", editor(s.RunPipeline))
 
@@ -294,7 +295,7 @@ const usage = `usage:
   libra sign-in-link <username>                print a one-time sign-in link (valid 15 minutes)
   libra api-key <name> <scope>[,<scope>]       create an API key (scopes: runtime, ingest)
   libra pipeline                               run the data pipeline once
-  libra demo [-users N] [-days N]              seed the demo "search" business, simulate traffic, run the pipeline
+  libra demo [-users N] [-days N]              seed the demo platform (search + reco), simulate traffic, run the pipeline
   libra simulate [-business K] [-users N] [-days N] [-seed S]
                                                generate more synthetic traffic for a business`
 

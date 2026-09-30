@@ -29,6 +29,11 @@
   --series-3: #16a37b;
   --series-4: #9b59d0;
   --series-5: #d43f7a;
+  --series-6: #0e9fb8;
+  --series-7: #b8860b;
+  --series-8: #6b7a8f;
+  --series-9: #c0392b;
+  --series-10: #5a4fcf;
   --radius: 10px;
   --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
@@ -62,6 +67,11 @@
     --series-3: #3fc79d;
     --series-4: #b98be6;
     --series-5: #ee6f9f;
+    --series-6: #3cc4db;
+    --series-7: #e0b54a;
+    --series-8: #9aa7b8;
+    --series-9: #f07167;
+    --series-10: #9a90ff;
   }
 }
 :root[data-theme="dark"] {
@@ -91,6 +101,11 @@
   --series-3: #3fc79d;
   --series-4: #b98be6;
   --series-5: #ee6f9f;
+  --series-6: #3cc4db;
+  --series-7: #e0b54a;
+  --series-8: #9aa7b8;
+  --series-9: #f07167;
+  --series-10: #9a90ff;
 }
 
 * { box-sizing: border-box; }
@@ -351,3 +366,42 @@ pre.code {
 .ptree .pkey.on { outline: 2px solid var(--accent); }
 .ptree .pval { color: var(--text); }
 .ptree .pstr { color: var(--good); }
+
+.popover {
+  position: fixed; z-index: 60; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); padding: 12px 14px; overflow: auto;
+}
+.use-item { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; }
+.use-item.conflict { border-color: var(--warn); background: var(--warn-soft); }
+.json-editor { tab-size: 2; white-space: pre; overflow-wrap: normal; overflow-x: auto; line-height: 1.55; }
+.gpick { display: grid; gap: 10px; }
+.gpick-list { display: grid; gap: 12px; max-height: 420px; overflow: auto; padding-right: 4px; }
+.gpick-owner { display: grid; gap: 6px; }
+.gpick-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px; }
+.gpick-item { display: flex; gap: 8px; align-items: flex-start; border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; cursor: pointer; min-width: 0; }
+.gpick-item.on { border-color: var(--accent); background: var(--accent-soft); }
+.gpick-item input { margin-top: 3px; }
+
+.rep-group + .rep-group { border-top: 1px solid var(--border); }
+.rep-group-head { padding: 10px 16px 4px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: middle; }
+.vchip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-3); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; cursor: pointer; }
+.vchip.on { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
+.vchip:not(.on) .dot { opacity: 0.3; }
+.split-bar { position: relative; height: 10px; background: var(--surface-2); border-radius: 5px; }
+.split-bar > div { height: 100%; border-radius: 5px; opacity: 0.8; }
+.split-bar .mark { position: absolute; top: -3px; width: 2px; height: 16px; background: var(--text); transform: translateX(-1px); }
+.rep-matrix td, .rep-matrix th { white-space: nowrap; }
+.rep-matrix .sticky-col { position: sticky; left: 0; background: var(--surface); z-index: 1; min-width: 200px; max-width: 280px; white-space: normal; box-shadow: 1px 0 0 var(--border); }
+.rep-matrix tr.clickable:hover .sticky-col { background: var(--surface-2); }
+.rep-matrix .lift { font-weight: 650; font-variant-numeric: tabular-nums; }
+.rep-matrix .cell-better { background: var(--good-soft); }
+.rep-matrix .cell-better .lift { color: var(--good); }
+.rep-matrix .cell-worse { background: var(--bad-soft); }
+.rep-matrix .cell-worse .lift { color: var(--bad); }
+.rep-matrix .cell-changed { background: var(--accent-soft); }
+.rep-matrix .cell-changed .lift { color: var(--accent-text); }
+.ptree-page { padding: 6px 0 10px; }
+.tnode { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 5px 12px; text-align: left; color: var(--text); cursor: pointer; font: inherit; min-width: 0; }
+.tnode:hover { background: var(--surface-2); }
+.tnode .caret { width: 12px; color: var(--text-3); }

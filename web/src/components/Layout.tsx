@@ -61,6 +61,9 @@ export default function Layout() {
           <NavLink to="/businesses">
             <Icon name="building" /> Businesses & metrics
           </NavLink>
+          <NavLink to="/parameters">
+            <Icon name="search" /> Parameters
+          </NavLink>
           <NavLink to="/layers">
             <Icon name="layers" /> Traffic layers
           </NavLink>
