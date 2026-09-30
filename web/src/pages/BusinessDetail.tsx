@@ -7,7 +7,7 @@ import { useCan } from "../lib/auth";
 import { fmtDateTime, fmtInt, fmtValue } from "../lib/format";
 import { useAsync, useDebounced } from "../lib/hooks";
 import type { Business, EventSummary, Filter, Measure, Metric, MetricGroup, Scope } from "../lib/types";
-import { slug } from "./Businesses";
+import { DeleteBusinessModal, slug } from "./Businesses";
 
 type Tab = "metrics" | "measures" | "groups" | "data" | "settings";
 
@@ -710,7 +710,7 @@ export function Groups({ scope, groups, metrics, reload }: { scope: Scope; group
                 )}
               </div>
               {g.description && <p className="faint small">{g.description}</p>}
-              {g.metric_ids.length === 0 ? (
+              {(g.metric_ids ?? []).length === 0 ? (
                 <div className="small faint">
                   No metrics yet.{" "}
                   {canEdit && !g.inherited &&
@@ -724,7 +724,7 @@ export function Groups({ scope, groups, metrics, reload }: { scope: Scope; group
                 </div>
               ) : (
                 <ol style={{ margin: 0, paddingLeft: 18 }} className="small">
-                  {g.metric_ids.map((id) => (
+                  {(g.metric_ids ?? []).map((id) => (
                     <li key={id}>{byId.get(id)?.name ?? `#${id}`}</li>
                   ))}
                 </ol>
@@ -945,6 +945,7 @@ function Data({ business, events }: { business: Business; events: EventSummary |
 // ---------- settings ----------
 
 function Settings({ business, onSaved }: { business: Business; onSaved: (b: Business) => void }) {
+  const [deleting, setDeleting] = useState(false);
   const [name, setName] = useState(business.name);
   const [description, setDescription] = useState(business.description);
   const [review, setReview] = useState(business.require_review);
@@ -985,27 +986,18 @@ function Settings({ business, onSaved }: { business: Business; onSaved: (b: Busi
       </div>
       <hr style={{ border: 0, borderTop: "1px solid var(--border)", width: "100%" }} />
       <div className="row-between">
-        <div className="small muted">
-          {business.experiments > 0
-            ? `Has ${business.experiments} experiment(s), so it can't be deleted. Move it to another platform from the platform page.`
-            : "Delete this business with its measures, metrics, groups and events."}
-        </div>
-        <button
-          className="btn btn-danger btn-sm"
-          disabled={business.experiments > 0}
-          onClick={async () => {
-            if (!confirm(`Delete ${business.name}?`)) return;
-            try {
-              await api.deleteBusiness(business.id);
-              window.location.assign(`${BASE}/platforms/${business.platform_id}`);
-            } catch (e) {
-              setError(e instanceof Error ? e.message : String(e));
-            }
-          }}
-        >
+        <div className="small muted">Delete this business with its measures, metrics, groups and events. You'll see what it removes first.</div>
+        <button className="btn btn-danger btn-sm" onClick={() => setDeleting(true)}>
           <Icon name="trash" /> Delete business
         </button>
       </div>
+      {deleting && (
+        <DeleteBusinessModal
+          business={business}
+          onClose={() => setDeleting(false)}
+          onDeleted={() => window.location.assign(`${BASE}/platforms/${business.platform_id}`)}
+        />
+      )}
     </section>
   );
 }

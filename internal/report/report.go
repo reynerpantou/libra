@@ -175,7 +175,7 @@ func (e *experimentInfo) window(o Options) (time.Time, time.Time) {
 }
 
 func parseIDs(raw string) []int64 {
-	var out []int64
+	out := []int64{} // never null in JSON
 	for _, p := range strings.Split(raw, ",") {
 		var id int64
 		if _, err := fmt.Sscan(strings.TrimSpace(p), &id); err == nil {
@@ -300,9 +300,16 @@ func selectMetrics(ctx context.Context, db *sql.DB, e *experimentInfo, o Options
 				}
 			}
 		}
-		var err error
-		if groups, err = loadGroups(ctx, db, ids); err != nil {
+		loaded, err := loadGroups(ctx, db, ids)
+		if err != nil {
 			return nil, nil, err
+		}
+		// An empty group (e.g. a platform's new default group) has
+		// nothing to show.
+		for _, g := range loaded {
+			if len(g.MetricIDs) > 0 {
+				groups = append(groups, g)
+			}
 		}
 	}
 	if len(groups) == 0 {

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { asset } from "../lib/api";
 import { useAuth, useCan } from "../lib/auth";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { Icon } from "./ui";
 
 function useTheme(): [string, () => void] {
@@ -108,7 +109,9 @@ export default function Layout() {
         </div>
       </aside>
       <main className="main">
-        <Outlet />
+        <ErrorBoundary key={loc.pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );

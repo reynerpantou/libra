@@ -133,6 +133,7 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("GET /businesses/{id}", viewer(s.GetBusiness))
 	api.Handle("PUT /businesses/{id}", admin(s.UpdateBusiness))
 	api.Handle("DELETE /businesses/{id}", admin(s.DeleteBusiness))
+	api.Handle("GET /businesses/{id}/delete-check", admin(s.DeleteCheck))
 	api.Handle("GET /businesses/{id}/measures", viewer(s.ListMeasures))
 	api.Handle("POST /businesses/{id}/measures", editor(s.CreateMeasure))
 	api.Handle("PUT /measures/{id}", editor(s.UpdateMeasure))

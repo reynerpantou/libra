@@ -133,6 +133,16 @@ export const api = {
   updatePlatform: (id: number, p: { key: string; name: string; description: string }) => request<Platform>("PUT", `/platforms/${id}`, p),
   deletePlatform: (id: number) => request<void>("DELETE", `/platforms/${id}`),
   deleteBusiness: (id: number) => request<void>("DELETE", `/businesses/${id}`),
+  deleteCheck: (id: number) =>
+    request<{
+      experiments: number;
+      active_experiments: number;
+      measures: number;
+      metrics: number;
+      groups: number;
+      events: number;
+      other_experiments_use: number;
+    }>("GET", `/businesses/${id}/delete-check`),
 
   measures: (sc: Scope) => request<Measure[]>("GET", `${scopePath(sc)}/measures`),
   createMeasure: (sc: Scope, m: MeasureInput) => request<Measure>("POST", `${scopePath(sc)}/measures`, m),
