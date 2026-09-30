@@ -963,7 +963,7 @@ function Settings({ business, onSaved }: { business: Business; onSaved: (b: Busi
         <input className="input input-mono" value={business.key} disabled />
       </Field>
       <label className="check">
-        <input type="checkbox" checked={review} onChange={(e) => setReview(e.target.checked)} /> Experiments need review by another editor before they start
+        <input type="checkbox" checked={review} onChange={(e) => setReview(e.target.checked)} /> Experiments need approval from an invited reviewer before they start
       </label>
       <ErrorBox error={error} />
       {msg && <div className="alert alert-good small">{msg}</div>}

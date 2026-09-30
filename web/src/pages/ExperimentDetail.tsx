@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { LineChart } from "../components/LineChart";
 import { ParamTree, UsagePanel } from "../components/ParamTree";
+import { ReviewerPicker } from "../components/ReviewerPicker";
 import { RolloutChoice, RolloutStatus, schedule } from "../components/Rollout";
 import ReportView from "../components/ReportView";
 import { TargetingView } from "../components/Targeting";
@@ -62,14 +63,23 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
   const [busy, setBusy] = useState(false);
   const actions = e.actions ?? [];
   const primary = ["start", "submit", "approve", "resume"];
-  const needsDialog = ["reject", "approve", "launch", "stop", "archive", "pause", "start"];
+  const needsDialog = ["reject", "approve", "launch", "stop", "archive", "pause", "start", "submit"];
+  const [reviewerIds, setReviewerIds] = useState<number[]>([]);
+  const [inviting, setInviting] = useState(false);
+  const needReviewers = pending === "submit" || inviting;
+  const people = useAsync(async () => (needReviewers ? api.users() : []), [needReviewers]);
+  const biz = useAsync(async () => (pending === "submit" ? api.business(e.business_id) : null), [pending, e.business_id]);
+  const reviewSkipped = pending === "submit" && biz.data && !biz.data.require_review;
 
   const run = async (action: string) => {
     setBusy(true);
     setError("");
     try {
       const g = (action === "start" || action === "launch") && gradual ? gradual : undefined;
-      onChange(await api.action(e.id, action, { note, variant_id: variantId || undefined, gradual: g }));
+      onChange(
+        await api.action(e.id, action, { note, variant_id: variantId || undefined, gradual: g, reviewer_ids: action === "submit" ? reviewerIds : undefined })
+      );
+      setReviewerIds([]);
       setPending(null);
       setNote("");
       setGradual(null);
@@ -111,7 +121,32 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
             Rejected by {e.reviewer_name}: {e.review_note}
           </div>
         )}
-        {e.status === "in_review" && <div className="alert alert-warn small" style={{ marginTop: 10 }}>Waiting for review by an editor other than the owner.</div>}
+        {e.status === "in_review" && (
+          <div className="alert alert-warn small row-between" style={{ marginTop: 10, gap: 10 }}>
+            <span>
+              {(e.reviewers ?? []).length === 0 ? (
+                <>No reviewers invited yet — invite at least one (you can invite yourself).</>
+              ) : (
+                <>
+                  Waiting for review by{" "}
+                  {(e.reviewers ?? []).map((r, i) => (
+                    <span key={r.user_id}>
+                      {i > 0 && ", "}
+                      <b>{r.name}</b>
+                      {r.decision && ` (${r.decision})`}
+                    </span>
+                  ))}
+                  . Any one of them can approve or reject.
+                </>
+              )}
+            </span>
+            {canEdit && (
+              <button className="btn btn-sm" onClick={() => setInviting(true)}>
+                <Icon name="plus" /> Invite reviewer
+              </button>
+            )}
+          </div>
+        )}
       </div>
       {canEdit && (
         <div className="row">
@@ -149,6 +184,41 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
         </div>
       )}
       {error && !pending && <div style={{ width: "100%" }}><ErrorBox error={error} /></div>}
+      {inviting && (
+        <Modal
+          title="Invite reviewers"
+          onClose={() => setInviting(false)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setInviting(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={busy || reviewerIds.length === 0}
+                onClick={async () => {
+                  setBusy(true);
+                  setError("");
+                  try {
+                    onChange(await api.inviteReviewers(e.id, reviewerIds));
+                    setReviewerIds([]);
+                    setInviting(false);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Invite
+              </button>
+            </>
+          }
+        >
+          <ReviewerPicker users={people.data ?? []} value={reviewerIds} onChange={setReviewerIds} already={(e.reviewers ?? []).map((r) => r.user_id)} />
+          <ErrorBox error={error} />
+        </Modal>
+      )}
       {pending && (
         <Modal
           title={actionLabel[pending]}
@@ -158,13 +228,21 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
               <button className="btn" onClick={() => setPending(null)}>
                 Cancel
               </button>
-              <button className={`btn ${pending === "stop" || pending === "reject" ? "btn-danger" : "btn-primary"}`} disabled={busy} onClick={() => run(pending)}>
+              <button className={`btn ${pending === "stop" || pending === "reject" ? "btn-danger" : "btn-primary"}`} disabled={busy || (pending === "submit" && !reviewSkipped && reviewerIds.length === 0)} onClick={() => run(pending)}>
                 {actionLabel[pending]}
               </button>
             </>
           }
         >
           {confirmText[pending] && <p className="muted">{confirmText[pending]}</p>}
+          {pending === "submit" &&
+            (reviewSkipped ? (
+              <p className="muted">{e.business_name} doesn't require review: submitting approves the experiment right away.</p>
+            ) : (
+              <Field label="Reviewers" hint="Invite at least one editor or admin — you can invite yourself. Any one of them can approve or reject.">
+                <ReviewerPicker users={people.data ?? []} value={reviewerIds} onChange={setReviewerIds} />
+              </Field>
+            ))}
           {pending === "start" && (
             <>
               <p className="muted">
@@ -610,6 +688,7 @@ function describe(action: string): string {
     traffic: "changed traffic",
     launch_rollout: "changed the launch rollout",
     rollout_cancel: "stopped a gradual rollout",
+    invite_reviewers: "invited reviewers",
     whitelist_add: "added test users",
     whitelist_remove: "removed a test user",
     clone: "created it as a clone",

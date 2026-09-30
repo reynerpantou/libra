@@ -182,6 +182,7 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("DELETE /experiments/{id}/whitelist/{unit}", editor(s.RemoveWhitelist))
 	api.Handle("GET /experiments/{id}/history", viewer(s.ExperimentHistory))
 	api.Handle("POST /experiments/{id}/clone", editor(s.CloneExperiment))
+	api.Handle("POST /experiments/{id}/reviewers", editor(s.InviteReviewers))
 	api.Handle("GET /experiments/{id}/report", viewer(s.ExperimentReport))
 	api.Handle("GET /experiments/{id}/trend", viewer(s.ExperimentTrend))
 	api.Handle("GET /experiments/{id}/exposures", viewer(s.ExposureDaily))

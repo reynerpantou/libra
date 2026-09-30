@@ -7,6 +7,7 @@ import (
 
 	"github.com/reynerpantou/libra/internal/assign"
 	"github.com/reynerpantou/libra/internal/database"
+	"github.com/reynerpantou/libra/internal/middleware"
 )
 
 // TestRollouts needs an empty Postgres database:
@@ -149,6 +150,36 @@ func TestRollouts(t *testing.T) {
 	must(db.QueryRow(`SELECT params::text FROM variants WHERE experiment_id = $1`, a).Scan(&params))
 	if params != `{"shop": {"a": 1}}` {
 		t.Errorf("rewrapped params: %s", params)
+	}
+
+	// Review: at least one reviewer, editors or admins only (the owner may
+	// invite themselves), and only invitees can approve.
+	var owner, viewer int64
+	must(db.QueryRow(`INSERT INTO users (username, display_name, role) VALUES ('own', 'Owner', 'editor') RETURNING id`).Scan(&owner))
+	must(db.QueryRow(`INSERT INTO users (username, display_name, role) VALUES ('view', 'Viewer', 'viewer') RETURNING id`).Scan(&viewer))
+	d := exp("d", assign.StatusDraft, 100)
+	invite := func(ids []int64) string {
+		tx, err := db.Begin()
+		must(err)
+		defer tx.Rollback()
+		_, msg, err := inviteReviewers(ctx, tx, d, ids, owner, true)
+		must(err)
+		must(tx.Commit())
+		return msg
+	}
+	if msg := invite(nil); msg == "" {
+		t.Error("submitting without reviewers should be refused")
+	}
+	if msg := invite([]int64{viewer}); msg == "" {
+		t.Error("a viewer can't review")
+	}
+	if msg := invite([]int64{owner, owner}); msg != "" {
+		t.Errorf("self-review refused: %s", msg)
+	}
+	e, err := s.loadExperiment(ctx, d, true)
+	must(err)
+	if len(e.Reviewers) != 1 || !canReview(e, middleware.User{ID: owner, Role: "editor"}) || canReview(e, middleware.User{ID: owner + 99, Role: "admin"}) {
+		t.Errorf("reviewers %+v", e.Reviewers)
 	}
 
 	// A launch rolls out 10% → 60% → 100%.

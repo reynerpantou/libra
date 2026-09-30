@@ -11,6 +11,7 @@ export function GroupPicker({
   onChange,
   businessId,
   platformId,
+  lockDefaults = true,
 }: {
   groups: MetricGroup[];
   metrics: MetricBrief[];
@@ -18,10 +19,11 @@ export function GroupPicker({
   onChange: (ids: number[]) => void;
   businessId: number;
   platformId: number;
+  lockDefaults?: boolean; // the experiment form: its own defaults are always in
 }) {
   const [q, setQ] = useState("");
   const metricName = useMemo(() => new Map(metrics.map((m) => [m.id, m.name])), [metrics]);
-  const isAuto = (g: MetricGroup) => g.is_default && ((g.business_id ?? 0) === businessId || ((g.platform_id ?? 0) === platformId && !!platformId));
+  const isAuto = (g: MetricGroup) => lockDefaults && g.is_default && ((g.business_id ?? 0) === businessId || ((g.platform_id ?? 0) === platformId && !!platformId));
   const selected = new Set(value);
 
   // Owners in order: this experiment's platform & business first.
@@ -89,7 +91,7 @@ export function GroupPicker({
                       <input type="checkbox" checked={on} disabled={auto} onChange={() => toggle(g.id)} />
                       <span style={{ minWidth: 0 }}>
                         <span style={{ fontWeight: 600 }}>{g.name}</span>{" "}
-                        {auto ? <span className="badge b-good">default · always</span> : g.is_default ? <span className="badge">default there</span> : null}
+                        {auto ? <span className="badge b-good">default · always</span> : g.is_default ? <span className="badge" title={`Included in every experiment of ${g.owner}`}>default of {g.owner}</span> : null}
                         <span className="faint small" style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {(g.metric_ids ?? []).length} metrics: {(g.metric_ids ?? []).map((id) => metricName.get(id) ?? `#${id}`).join(", ")}
                         </span>

@@ -238,6 +238,16 @@ export interface Variant {
   params: Record<string, unknown>;
 }
 
+export interface Reviewer {
+  user_id: number;
+  name: string;
+  decision?: "approved" | "rejected";
+  note?: string;
+  invited_by: string;
+  invited_at: string;
+  decided_at?: string;
+}
+
 export interface WhitelistEntry {
   unit_id: string;
   variant_id: number;
@@ -289,6 +299,7 @@ export interface Experiment {
   updated_at: string;
   variants?: Variant[];
   whitelist?: WhitelistEntry[];
+  reviewers?: Reviewer[];
   units: number;
   actions?: string[];
 }

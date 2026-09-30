@@ -3,34 +3,96 @@ import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { ago, fmtInt, fmtP, fmtPct, fmtValue } from "../lib/format";
 import { useAsync } from "../lib/hooks";
-import type { Comparison, Experiment, MetricResult, Report, ReportVariant } from "../lib/types";
+import { copyText, downloadCSV, toTSV, type Cell } from "../lib/exportTable";
+import type { Comparison, Experiment, MetricBrief, MetricGroup, MetricResult, Report, ReportVariant } from "../lib/types";
 import { LineChart } from "./LineChart";
 import { GroupPicker } from "./GroupPicker";
 import { Empty, ErrorBox, Field, Loading, Popover, Segmented, Stat, seriesColor } from "./ui";
 
-const verdictText: Record<Comparison["verdict"], string> = {
-  better: "Better",
-  worse: "Worse",
-  changed: "Changed",
-  flat: "Not significant",
-  untestable: "Too little data",
-};
-const verdictClass: Record<Comparison["verdict"], string> = {
-  better: "b-good",
-  worse: "b-bad",
-  changed: "b-accent",
-  flat: "",
-  untestable: "",
-};
+// verdict names a comparison's result. "Positive"/"negative" say whether
+// the change is good for the metric (its direction: higher or lower is
+// better); the arrow says which way it moved.
+export function verdict(c: Comparison, m: Pick<MetricResult, "direction">): { text: string; cls: string; title: string } {
+  const up = (c.rel_diff ?? c.abs_diff ?? 0) > 0;
+  const arrow = up ? "↑" : "↓";
+  const moved = up ? "increase" : "decrease";
+  const pref = m.direction === "increase" ? "higher is better" : m.direction === "decrease" ? "lower is better" : "no preferred direction";
+  switch (c.verdict) {
+    case "better":
+      return { text: `Significant positive ${arrow}`, cls: "b-good", title: `Significant ${moved} — good for this metric (${pref})` };
+    case "worse":
+      return { text: `Significant negative ${arrow}`, cls: "b-bad", title: `Significant ${moved} — bad for this metric (${pref})` };
+    case "changed":
+      return { text: `Significant ${moved} ${arrow}`, cls: "b-accent", title: "Significant change; this metric has no preferred direction" };
+    case "flat":
+      return { text: "Not significant", cls: "", title: "The confidence interval includes zero: no detectable difference" };
+    default:
+      return { text: "Too little data", cls: "", title: "Not enough units or variance to test yet" };
+  }
+}
+
+// CopyButton copies text and says so for a moment.
+function CopyButton({ text, label = "Copy", title, className = "copy-btn" }: { text: () => string; label?: string; title?: string; className?: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      className={className}
+      title={title ?? "Copy as a table (pastes into sheets)"}
+      onClick={async (e) => {
+        e.stopPropagation();
+        await copyText(text());
+        setDone(true);
+        setTimeout(() => setDone(false), 1400);
+      }}
+    >
+      {done ? "Copied ✓" : label}
+    </button>
+  );
+}
+
+const pctCell = (v: number | null | undefined) => (v === null || v === undefined || !isFinite(v) ? "" : (v * 100).toFixed(2) + "%");
+const numCell = (v: number | null | undefined, d = 4) => (v === null || v === undefined || !isFinite(v) ? "" : +v.toFixed(d));
+
+// rowsFor lays a set of metric results out as a table: one row per metric
+// and variant compared with control.
+function rowsFor(metrics: MetricResult[], control: ReportVariant, treatments: ReportVariant[], extra: Cell[] = []): Cell[][] {
+  const out: Cell[][] = [];
+  for (const m of metrics) {
+    const cv = m.values.find((v) => v.variant_id === control.id);
+    for (const t of treatments) {
+      const tv = m.values.find((v) => v.variant_id === t.id);
+      const c = m.comparisons.find((x) => x.variant_id === t.id);
+      out.push([
+        ...extra,
+        m.name,
+        m.key,
+        t.name || t.key,
+        numCell(cv?.value),
+        numCell(tv?.value),
+        pctCell(c?.rel_diff),
+        pctCell(c?.rel_ci_low),
+        pctCell(c?.rel_ci_high),
+        c?.p_value === null || c?.p_value === undefined ? "" : +c.p_value.toPrecision(3),
+        c ? verdict(c, m).text : m.error ?? "",
+      ]);
+    }
+  }
+  return out;
+}
+const rowHeader = ["Metric", "Key", "Variant", "Control value", "Variant value", "Relative lift", "CI low", "CI high", "p-value", "Result"];
 
 type Layout = "detailed" | "matrix";
+type Selection = { kind: "experiment" } | { kind: "all" } | { kind: "groups"; ids: number[] } | { kind: "metrics"; ids: number[] };
 
 export default function ReportView({ experiment: e }: { experiment: Experiment }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   // Metric selection: the experiment's own groups (with defaults), a custom
   // set of groups, or every metric the business can see.
-  const [pick, setPick] = useState<{ kind: "experiment" } | { kind: "groups"; ids: number[] } | { kind: "all" }>({ kind: "experiment" });
+  const [pick, setPick] = useState<Selection>({ kind: "experiment" });
+  const [q, setQ] = useState("");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [picker, setPicker] = useState<HTMLElement | null>(null);
   const [dimension, setDimension] = useState("");
   const [alpha, setAlpha] = useState("0.05");
@@ -42,12 +104,13 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
     return { groups, metrics, business };
   }, [e.business_id]);
 
-  const pickKey = pick.kind === "groups" ? pick.ids.join(",") : pick.kind;
+  const pickKey = pick.kind === "groups" || pick.kind === "metrics" ? `${pick.kind}:${pick.ids.join(",")}` : pick.kind;
   const rep = useAsync(async () => {
     if (pick.kind === "all") {
       const metrics = (await api.metrics({ kind: "business", id: e.business_id })).map((m) => m.id).join(",");
       return api.report(e.id, { from, to, metrics, dimension, alpha });
     }
+    if (pick.kind === "metrics") return api.report(e.id, { from, to, metrics: pick.ids.join(",") || "0", dimension, alpha });
     return api.report(e.id, { from, to, groups: pick.kind === "groups" ? pick.ids.join(",") || "0" : undefined, dimension, alpha });
   }, [e.id, from, to, pickKey, dimension, alpha, e.updated_at]);
 
@@ -61,8 +124,36 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
   const treatments = r && control ? r.variants.filter((v) => v.id !== control.id) : [];
   const shown = treatments.filter((v) => !hidden.has(v.id));
   const lay: Layout = layout ?? (treatments.length > 3 ? "matrix" : "detailed");
+  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
   const groupLabel =
-    pick.kind === "all" ? "All business metrics" : pick.kind === "groups" ? `${pick.ids.length} group${pick.ids.length === 1 ? "" : "s"} (custom)` : "Experiment's groups";
+    pick.kind === "all"
+      ? `Every ${e.business_name} metric`
+      : pick.kind === "groups"
+      ? `Custom: ${plural(pick.ids.length, "group")}`
+      : pick.kind === "metrics"
+      ? `Custom: ${plural(pick.ids.length, "metric")}`
+      : "As set up on the experiment";
+  const query = q.trim().toLowerCase();
+  const matches = (m: MetricResult) => !query || [m.name, m.key, m.formula].some((x) => x.toLowerCase().includes(query));
+  const groupsOf = (seg: Report["segments"][number]) => {
+    const byId = new Map(seg.metrics.map((m) => [m.metric_id, m]));
+    return (r?.groups ?? []).map((g) => ({ g, key: `${g.id}-${g.name}`, ms: (g.metric_ids ?? []).map((id) => byId.get(id)).filter((m): m is MetricResult => !!m) }));
+  };
+  const totalMetrics = r ? new Set(r.segments[0]?.metrics.map((m) => m.metric_id)).size : 0;
+  const shownMetrics = r ? new Set(r.segments[0]?.metrics.filter(matches).map((m) => m.metric_id)).size : 0;
+  const exportRows = (): Cell[][] => {
+    if (!r || !control) return [];
+    const rows: Cell[][] = [["Segment", "Group", ...rowHeader]];
+    for (const seg of r.segments)
+      for (const { g, ms } of groupsOf(seg)) rows.push(...rowsFor(ms, control, treatments, [r.dimension ? `${r.dimension}=${seg.value}` : "all", g.name]));
+    return rows;
+  };
+  const visibleRows = (): Cell[][] => {
+    if (!r || !control) return [];
+    const rows: Cell[][] = [["Group", ...rowHeader]];
+    for (const { g, ms, key } of groupsOf(r.segments[0])) if (!collapsed.has(key)) rows.push(...rowsFor(ms.filter(matches), control, shown, [g.name]));
+    return rows;
+  };
 
   return (
     <div className="stack">
@@ -145,28 +236,16 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
         )}
       </div>
       {picker && refs.data && (
-        <Popover anchor={picker} onClose={() => setPicker(null)} width={720}>
-          <div className="stack-sm">
-            <div className="row-between">
-              <b>Metrics in this report</b>
-              <div className="row" style={{ gap: 6 }}>
-                <button className={`btn btn-sm ${pick.kind === "experiment" ? "btn-primary" : ""}`} onClick={() => setPick({ kind: "experiment" })}>
-                  Experiment's groups
-                </button>
-                <button className={`btn btn-sm ${pick.kind === "all" ? "btn-primary" : ""}`} onClick={() => setPick({ kind: "all" })}>
-                  All business metrics
-                </button>
-              </div>
-            </div>
-            <GroupPicker
-              groups={refs.data.groups}
-              metrics={refs.data.metrics}
-              value={pick.kind === "groups" ? pick.ids : pick.kind === "experiment" ? (r?.groups ?? []).map((g) => g.id).filter(Boolean) : []}
-              onChange={(ids) => setPick({ kind: "groups", ids })}
-              businessId={-1}
-              platformId={-1}
-            />
-          </div>
+        <Popover anchor={picker} onClose={() => setPicker(null)} width={760}>
+          <MetricsChooser
+            e={e}
+            pick={pick}
+            onPick={setPick}
+            current={(r?.groups ?? []).map((g) => g.id).filter(Boolean)}
+            groups={refs.data.groups}
+            metrics={refs.data.metrics}
+            configured={configuredLabel(e, refs.data.groups)}
+          />
         </Popover>
       )}
 
@@ -185,6 +264,27 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
       ) : (
         <>
           <Summary r={r} />
+          <div className="card card-pad rep-toolbar">
+            <input
+              className="input"
+              style={{ flex: 1, minWidth: 220, maxWidth: 420 }}
+              placeholder="Find a metric by name, key or formula…"
+              value={q}
+              onChange={(x) => setQ(x.target.value)}
+            />
+            <span className="small faint">{query ? `${shownMetrics} of ${totalMetrics} metrics` : `${totalMetrics} metrics`}</span>
+            <span className="spacer" />
+            <button className="btn btn-sm btn-ghost" onClick={() => setCollapsed(new Set())}>
+              Expand all
+            </button>
+            <button className="btn btn-sm btn-ghost" onClick={() => setCollapsed(new Set(r.segments.flatMap((sg) => groupsOf(sg).map((x) => x.key))))}>
+              Collapse all
+            </button>
+            <CopyButton className="btn btn-sm" label="Copy table" title="Copy what's shown (open groups, matching metrics, visible variants) — pastes into a sheet" text={() => toTSV(visibleRows())} />
+            <button className="btn btn-sm" onClick={() => downloadCSV(`libra-${e.id}-report-${r.from}-to-${r.to}.csv`, exportRows())} title="Every group, metric and variant (and segment) as CSV">
+              Export CSV
+            </button>
+          </div>
           {r.segments.map((seg) => (
             <section key={seg.value} className="card">
               <div className="card-head">
@@ -193,25 +293,39 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
                   <p>
                     {fmtInt(seg.units)} units · {r.from} to {r.to} · {Math.round((1 - r.alpha) * 100)}% confidence intervals · click a metric for its trend
                   </p>
+                  <p className="small faint">
+                    <b>Significant positive</b> / <b>negative</b>: a real change that's good / bad for the metric (its direction decides — for latency, lower is
+                    better); the arrow shows which way it moved. <b>Not significant</b>: no detectable difference yet.
+                  </p>
                 </div>
               </div>
-              {r.groups.map((g) => {
-                const byId = new Map(seg.metrics.map((m) => [m.metric_id, m]));
-                const ms = (g.metric_ids ?? []).map((id) => byId.get(id)).filter((m): m is MetricResult => !!m);
+              {groupsOf(seg).map(({ g, key, ms: all }) => {
+                const ms = all.filter(matches);
+                if (query && ms.length === 0) return null;
+                const closed = collapsed.has(key);
+                const toggle = () => {
+                  const next = new Set(collapsed);
+                  if (closed) next.delete(key);
+                  else next.add(key);
+                  setCollapsed(next);
+                };
                 return (
-                  <div key={`${g.id}-${g.name}`} className="rep-group">
+                  <div key={key} className="rep-group">
                     {(r.groups.length > 1 || g.id !== 0) && (
-                      <div className="rep-group-head">
+                      <div className="rep-group-head" onClick={toggle} title={closed ? "Show" : "Hide"}>
+                        <span className="faint" style={{ width: 12 }}>
+                          {closed ? "▸" : "▾"}
+                        </span>
                         <b>{g.name}</b> <span className="faint small">{g.owner}</span>{" "}
                         {g.is_default && (
                           <span className="badge b-good" title="A default group: included in every experiment of its business or platform">
                             default
                           </span>
                         )}
-                        <span className="faint small"> · {ms.length} metrics</span>
+                        <span className="faint small"> · {query ? `${ms.length} of ${all.length}` : ms.length} metrics</span>
                       </div>
                     )}
-                    {lay === "matrix" && control ? (
+                    {closed ? null : lay === "matrix" && control ? (
                       <MetricMatrix metrics={ms} control={control} treatments={shown} all={r.variants} selected={r.dimension ? null : selected} onSelect={setSelected} />
                     ) : (
                       <MetricTable metrics={ms} variants={r.variants.filter((v) => !hidden.has(v.id))} selected={r.dimension ? null : selected} onSelect={setSelected} />
@@ -350,11 +464,25 @@ function MetricMatrix({
         <thead>
           <tr>
             <th className="sticky-col">Metric</th>
-            <th className="num">{control.name || control.key}</th>
+            <th className="num">
+              <div className="th-copy">
+                {control.name || control.key}
+                <CopyButton
+                  label="⧉"
+                  title={`Copy the ${control.name || control.key} column`}
+                  text={() => toTSV([["Metric", "Key", `${control.name || control.key} (control)`], ...metrics.map((m) => [m.name, m.key, numCell(m.values.find((v) => v.variant_id === control.id)?.value)])])}
+                />
+              </div>
+            </th>
             {treatments.map((t) => (
               <th key={t.id} className="num" title={t.key}>
-                <span className="dot" style={{ background: seriesColor(all.findIndex((x) => x.id === t.id)), marginRight: 6 }} />
-                {t.name || t.key}
+                <div className="th-copy">
+                  <span>
+                    <span className="dot" style={{ background: seriesColor(all.findIndex((x) => x.id === t.id)), marginRight: 6 }} />
+                    {t.name || t.key}
+                  </span>
+                  <CopyButton label="⧉" title={`Copy the ${t.name || t.key} column: values, lift, interval, p-value and result`} text={() => toTSV([rowHeader, ...rowsFor(metrics, control, [t])])} />
+                </div>
               </th>
             ))}
           </tr>
@@ -387,7 +515,7 @@ function MetricMatrix({
                       title={`${t.name || t.key}: ${fmtValue(tv?.value ?? null, m.format, m.decimals)} · ${fmtPct(c.rel_ci_low, 1)} to ${fmtPct(
                         c.rel_ci_high,
                         1
-                      )} · p ${fmtP(c.p_value)} · ${verdictText[c.verdict]}`}
+                      )} · p ${fmtP(c.p_value)} · ${verdict(c, m).text}`}
                     >
                       <div className="lift">{fmtPct(c.rel_diff)}</div>
                       <div className="small faint nowrap">
@@ -496,7 +624,13 @@ function MetricTable({
                       <td className={`num lift ${cls}`}>{c ? fmtPct(c.rel_diff) : "—"}</td>
                       <td>{c && <CIBar c={c} scale={scale} />}</td>
                       <td className="num faint">{c ? fmtP(c.p_value) : "—"}</td>
-                      <td>{c && <span className={`badge ${verdictClass[c.verdict]}`}>{verdictText[c.verdict]}</span>}</td>
+                      <td>
+                        {c && (
+                          <span className={`badge ${verdict(c, m).cls}`} title={verdict(c, m).title}>
+                            {verdict(c, m).text}
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -608,5 +742,145 @@ function Trend({
         />
       )}
     </section>
+  );
+}
+
+// configuredLabel spells out what "as set up" means for this experiment:
+// the default groups of its business and platform plus the groups chosen
+// on the experiment.
+function configuredLabel(e: Experiment, groups: MetricGroup[]): string {
+  const mine = groups.filter(
+    (g) =>
+      (g.metric_ids ?? []).length > 0 &&
+      ((g.is_default && (g.business_id === e.business_id || (!!g.platform_id && g.platform_id === e.platform_id))) || e.metric_group_ids.includes(g.id))
+  );
+  const dup = (n: string) => mine.filter((g) => g.name === n).length > 1;
+  return mine.length ? mine.map((g) => (dup(g.name) ? `${g.name} (${g.owner})` : g.name)).join(", ") : `no groups — shows every ${e.business_name} metric`;
+}
+
+// MetricsChooser: three plain choices — the experiment's setup, every
+// metric of the business, or a custom pick of groups or single metrics.
+function MetricsChooser({
+  e,
+  pick,
+  onPick,
+  current,
+  groups,
+  metrics,
+  configured,
+}: {
+  e: Experiment;
+  pick: Selection;
+  onPick: (p: Selection) => void;
+  current: number[];
+  groups: MetricGroup[];
+  metrics: MetricBrief[];
+  configured: string;
+}) {
+  const custom = pick.kind === "groups" || pick.kind === "metrics";
+  const [tab, setTab] = useState<"groups" | "metrics">(pick.kind === "metrics" ? "metrics" : "groups");
+  const [others, setOthers] = useState(false);
+  const [q, setQ] = useState("");
+  const ownNames = [e.business_name, e.platform_name];
+  // Empty groups have nothing to show; other platforms only on request.
+  const usable = groups.filter((g) => (g.metric_ids ?? []).length > 0 && (others || g.platform === e.platform_name));
+  const pickable = metrics.filter((m) => others || ownNames.includes(m.owner));
+  const s = q.trim().toLowerCase();
+  const shownMetrics = pickable.filter((m) => !s || [m.name, m.key, m.owner].some((x) => x.toLowerCase().includes(s)));
+  const selectedMetrics = pick.kind === "metrics" ? pick.ids : [];
+  const option = (kind: "experiment" | "all" | "custom", title: string, desc: string) => {
+    const on = kind === "custom" ? custom : pick.kind === kind;
+    return (
+      <label className={`gpick-item ${on ? "on" : ""}`} style={{ alignItems: "flex-start" }}>
+        <input
+          type="radio"
+          checked={on}
+          onChange={() =>
+            onPick(kind === "custom" ? (tab === "metrics" ? { kind: "metrics", ids: [] } : { kind: "groups", ids: current }) : { kind })
+          }
+        />
+        <span>
+          <span style={{ fontWeight: 600 }}>{title}</span>
+          <span className="faint small" style={{ display: "block" }}>
+            {desc}
+          </span>
+        </span>
+      </label>
+    );
+  };
+  return (
+    <div className="stack-sm">
+      <b>Which metrics should this report show?</b>
+      <div className="choice-grid">
+        {option("experiment", "As set up on the experiment", configured)}
+        {option("all", `Every ${e.business_name} metric`, `All metrics defined for ${e.business_name} and shared by ${e.platform_name}`)}
+        {option("custom", "Custom", "Pick metric groups, or single metrics")}
+      </div>
+      {custom && (
+        <>
+          <div className="row-between">
+            <Segmented<"groups" | "metrics">
+              options={[
+                ["groups", "By group"],
+                ["metrics", "Single metrics"],
+              ]}
+              value={tab}
+              onChange={(t) => {
+                setTab(t);
+                onPick(t === "metrics" ? { kind: "metrics", ids: [] } : { kind: "groups", ids: current });
+              }}
+            />
+            <label className="check small">
+              <input type="checkbox" checked={others} onChange={(x) => setOthers(x.target.checked)} /> Include other platforms
+            </label>
+          </div>
+          {tab === "groups" ? (
+            <GroupPicker
+              groups={usable}
+              metrics={metrics}
+              value={pick.kind === "groups" ? pick.ids : []}
+              onChange={(ids) => onPick({ kind: "groups", ids })}
+              businessId={e.business_id}
+              platformId={e.platform_id}
+              lockDefaults={false}
+            />
+          ) : (
+            <div className="stack-sm">
+              <div className="row" style={{ gap: 8 }}>
+                <input className="input" style={{ flex: 1 }} placeholder="Search metrics…" value={q} onChange={(x) => setQ(x.target.value)} />
+                <span className="small faint">{selectedMetrics.length} selected</span>
+                <button className="btn btn-sm" onClick={() => onPick({ kind: "metrics", ids: Array.from(new Set([...selectedMetrics, ...shownMetrics.map((m) => m.id)])) })}>
+                  Select all{s ? " shown" : ""}
+                </button>
+                <button className="btn btn-sm" onClick={() => onPick({ kind: "metrics", ids: [] })} disabled={selectedMetrics.length === 0}>
+                  Clear
+                </button>
+              </div>
+              <div className="gpick-items" style={{ maxHeight: 320, overflow: "auto" }}>
+                {shownMetrics.map((m) => {
+                  const on = selectedMetrics.includes(m.id);
+                  return (
+                    <label key={m.id} className={`gpick-item ${on ? "on" : ""}`}>
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => onPick({ kind: "metrics", ids: on ? selectedMetrics.filter((x) => x !== m.id) : [...selectedMetrics, m.id] })}
+                      />
+                      <span style={{ minWidth: 0 }}>
+                        <span style={{ fontWeight: 600 }}>{m.name}</span>
+                        <span className="faint small" style={{ display: "block" }}>
+                          <span className="mono">{m.key}</span> · {m.owner}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+                {shownMetrics.length === 0 && <div className="small faint">No metrics match.</div>}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
