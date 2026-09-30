@@ -10,7 +10,8 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "127.0.0.1:5432:5432"
+      # 5433 on the host so it can run next to other projects' Postgres on 5432.
+      - "127.0.0.1:${LIBRA_DB_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-libra}"]
       interval: 5s

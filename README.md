@@ -135,7 +135,8 @@ use the same hash: the first 8 bytes of SHA-256, big-endian, mod 1000, over
 | Variable | Default | Purpose |
 |---|---|---|
 | `LIBRA_ADDR` | `:8080` | listen address |
-| `LIBRA_DATABASE_URL` | `postgres://libra:libra@localhost:5432/libra?sslmode=disable` | Postgres |
+| `LIBRA_DATABASE_URL` | `postgres://libra:libra@localhost:5433/libra?sslmode=disable` | Postgres |
+| `LIBRA_DB_PORT` | `5433` | host port of the compose Postgres container |
 | `LIBRA_PIPELINE_INTERVAL_SECONDS` | `300` | pipeline schedule (0 = on demand only) |
 | `LIBRA_COOKIE_SECURE` | `true` | HTTPS-only cookies (browsers accept them on `http://localhost`) |
 | `LIBRA_PUBLIC_URL` | `http://localhost:8080` | sign-in callbacks return here |
