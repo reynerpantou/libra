@@ -18,9 +18,12 @@ func (s *Server) Diagnose(w http.ResponseWriter, r *http.Request) {
 	if !decodeOr400(w, r, &req) {
 		return
 	}
-	req.UnitID = strings.TrimSpace(req.UnitID)
-	if req.UnitID == "" {
-		badRequest(w, "unit id is required")
+	req.UserID, req.DeviceID = strings.TrimSpace(req.UserID), strings.TrimSpace(req.DeviceID)
+	if req.UserID == "" {
+		req.UserID = strings.TrimSpace(req.UnitID)
+	}
+	if req.UserID == "" && req.DeviceID == "" {
+		badRequest(w, "enter a user id, a device id, or both")
 		return
 	}
 	snap := s.Store.Snapshot()

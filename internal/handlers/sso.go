@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/reynerpantou/libra/internal/auth"
+	"github.com/reynerpantou/libra/internal/config"
 	"github.com/reynerpantou/libra/internal/middleware"
 )
 
@@ -45,7 +46,7 @@ func (s *Server) AuthProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) redirectURI(provider string) string {
-	return s.Cfg.PublicURL + "/api/auth/" + provider + "/callback"
+	return s.Cfg.AppURL() + "/api/auth/" + provider + "/callback"
 }
 
 // loginError sends the browser back to the sign-in page with a reason code
@@ -55,7 +56,7 @@ func loginError(w http.ResponseWriter, r *http.Request, code string, extra url.V
 	for k, v := range extra {
 		q[k] = v
 	}
-	http.Redirect(w, r, "/login?"+q.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, config.BasePath+"/login?"+q.Encode(), http.StatusSeeOther)
 }
 
 // AuthStart begins a sign-in and sends the browser to the provider.
@@ -98,7 +99,7 @@ func (s *Server) beginFlow(w http.ResponseWriter, r *http.Request, name, purpose
 		sameSite = http.SameSiteNoneMode
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: flowCookie, Value: browser, Path: "/api/auth/",
+		Name: flowCookie, Value: browser, Path: config.BasePath + "/api/auth/",
 		HttpOnly: true, Secure: s.Cfg.CookieSecure, SameSite: sameSite,
 		MaxAge: int(flowTTL.Seconds()),
 	})
@@ -122,7 +123,7 @@ func (s *Server) AuthCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: flowCookie, Value: "", Path: "/api/auth/", MaxAge: -1, HttpOnly: true, Secure: s.Cfg.CookieSecure})
+	http.SetCookie(w, &http.Cookie{Name: flowCookie, Value: "", Path: config.BasePath + "/api/auth/", MaxAge: -1, HttpOnly: true, Secure: s.Cfg.CookieSecure})
 	if e := r.FormValue("error"); e != "" {
 		if e == "access_denied" || e == "user_cancelled_authorize" {
 			loginError(w, r, "cancelled", nil)
@@ -190,7 +191,7 @@ func (s *Server) AuthCallback(w http.ResponseWriter, r *http.Request) {
 		loginError(w, r, "failed", nil)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, config.BasePath+"/", http.StatusSeeOther)
 }
 
 var errNotInvited = errors.New("no account for this sign-in")
@@ -274,12 +275,12 @@ func (s *Server) startSession(w http.ResponseWriter, uid int64) error {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: middleware.SessionCookie, Value: token, Path: "/",
+		Name: middleware.SessionCookie, Value: token, Path: config.BasePath + "/",
 		HttpOnly: true, Secure: s.Cfg.CookieSecure, SameSite: http.SameSiteLaxMode,
 		Expires: time.Now().Add(s.Cfg.SessionTTL),
 	})
 	http.SetCookie(w, &http.Cookie{
-		Name: middleware.CSRFCookie, Value: csrf, Path: "/",
+		Name: middleware.CSRFCookie, Value: csrf, Path: config.BasePath + "/",
 		HttpOnly: false, Secure: s.Cfg.CookieSecure, SameSite: http.SameSiteLaxMode,
 		Expires: time.Now().Add(s.Cfg.SessionTTL),
 	})
@@ -329,7 +330,7 @@ func NewSignInLink(db *sql.DB, publicURL string, uid int64) (string, error) {
 		auth.HashToken(token), uid, time.Now().Add(linkTTL)); err != nil {
 		return "", err
 	}
-	return publicURL + "/login/link#" + token, nil
+	return publicURL + config.BasePath + "/login/link#" + token, nil
 }
 
 // linkedProviders lists which sign-in accounts are connected to uid.

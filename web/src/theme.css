@@ -318,3 +318,36 @@ pre.code {
 .provider-google:hover:not(:disabled) { background: #f2f2f2; }
 .provider-apple { background: #000; color: #fff; border: 1px solid #3d4453; }
 .provider-apple:hover:not(:disabled) { background: #111; }
+
+/* ---- combobox ---- */
+.combo { position: relative; min-width: 0; }
+.combo-list {
+  position: absolute; z-index: 60; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 4px; list-style: none;
+  max-height: 260px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: var(--shadow-lg);
+  min-width: 220px;
+}
+.combo-list li { display: flex; justify-content: space-between; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.combo-list li small { color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.combo-list li.active { background: var(--surface-2); }
+.combo-list li.selected span { font-weight: 650; color: var(--accent-text); }
+.combo-list .combo-empty { color: var(--text-3); cursor: default; }
+
+/* ---- targeting editor ---- */
+.tgroup { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.trule { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.and-label { width: 34px; font-size: 11.5px; font-weight: 700; color: var(--text-3); letter-spacing: 0.04em; }
+.or-divider { display: flex; align-items: center; gap: 10px; margin: 8px 0; color: var(--accent-text); font-size: 12px; font-weight: 700; }
+.or-divider::before, .or-divider::after { content: ""; flex: 1; border-top: 1px dashed var(--border-strong); }
+.chips-input { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 34px; padding: 3px 6px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); }
+.chips-input input { flex: 1; min-width: 100px; border: 0; outline: 0; background: transparent; height: 26px; }
+.chips-input .chip button { border: 0; background: none; cursor: pointer; color: var(--text-3); padding: 0 0 0 2px; font-size: 14px; line-height: 1; }
+
+/* ---- parameter tree ---- */
+.ptree { font-family: var(--mono); font-size: 12.5px; line-height: 1.7; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+.ptree .pkey { border: 0; background: none; padding: 0 2px; border-radius: 4px; font: inherit; color: var(--accent-text); cursor: pointer; }
+.ptree .pkey:hover { background: var(--accent-soft); }
+.ptree .pkey.used { text-decoration: underline dotted; text-underline-offset: 3px; }
+.ptree .pkey.conflict { color: var(--warn); background: var(--warn-soft); }
+.ptree .pkey.on { outline: 2px solid var(--accent); }
+.ptree .pval { color: var(--text); }
+.ptree .pstr { color: var(--good); }

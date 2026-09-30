@@ -4,7 +4,8 @@
 //
 //   - assignments: each unit's first exposure to each experiment (variant,
 //     time, and the request attributes used for dimension breakdowns).
-//   - unit_measure_daily: every measure's value per unit per day.
+//   - unit_measure_daily: every measure's value per unit per day, keyed by
+//     user id and, for events that name one, by device id too.
 //
 // Runs are incremental. A watermark on row ids tracks what's been processed;
 // for events, each (business, day) that received new rows is recomputed from
@@ -123,15 +124,15 @@ func rollupExposures(ctx context.Context, db *sql.DB, wm int64, cutoff time.Time
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `
 		WITH batch AS (
-			SELECT experiment_id, unit_id, variant_id, ts, attrs FROM exposures WHERE id > $1 AND id <= $2
+			SELECT experiment_id, unit_id, variant_id, ts, attrs, unit_type FROM exposures WHERE id > $1 AND id <= $2
 		), variants_seen AS (
 			SELECT experiment_id, unit_id, count(DISTINCT variant_id) AS n FROM batch GROUP BY 1, 2
 		), firsts AS (
-			SELECT DISTINCT ON (experiment_id, unit_id) experiment_id, unit_id, variant_id, ts, attrs
+			SELECT DISTINCT ON (experiment_id, unit_id) experiment_id, unit_id, variant_id, ts, attrs, unit_type
 			FROM batch ORDER BY experiment_id, unit_id, ts
 		)
-		INSERT INTO assignments AS a (experiment_id, unit_id, variant_id, first_ts, first_day, multi_variant, dims)
-		SELECT f.experiment_id, f.unit_id, f.variant_id, f.ts, (f.ts AT TIME ZONE 'UTC')::date, v.n > 1, f.attrs
+		INSERT INTO assignments AS a (experiment_id, unit_id, variant_id, first_ts, first_day, multi_variant, dims, unit_type)
+		SELECT f.experiment_id, f.unit_id, f.variant_id, f.ts, (f.ts AT TIME ZONE 'UTC')::date, v.n > 1, f.attrs, f.unit_type
 		FROM firsts f JOIN variants_seen v USING (experiment_id, unit_id)
 		ON CONFLICT (experiment_id, unit_id) DO UPDATE SET
 			multi_variant = a.multi_variant OR EXCLUDED.multi_variant OR a.variant_id <> EXCLUDED.variant_id,
@@ -298,11 +299,16 @@ func recompute(ctx context.Context, db *sql.DB, m Measure, days []time.Time, max
 	}
 	where = append(where, conds...)
 	q := fmt.Sprintf(`
-		INSERT INTO unit_measure_daily (measure_id, day, unit_id, value)
-		SELECT %s, (ts AT TIME ZONE 'UTC')::date AS day, unit_id, %s
-		FROM events WHERE %s
-		GROUP BY 2, 3
-		HAVING %s IS NOT NULL`, mid, agg, strings.Join(where, " AND "), agg)
+		INSERT INTO unit_measure_daily (measure_id, day, unit_type, unit_id, value)
+		SELECT %[1]s::bigint, (ts AT TIME ZONE 'UTC')::date AS day, 'user_id', unit_id, %[2]s
+		FROM events WHERE %[3]s AND unit_id <> ''
+		GROUP BY 2, 4
+		HAVING %[2]s IS NOT NULL
+		UNION ALL
+		SELECT %[1]s::bigint, (ts AT TIME ZONE 'UTC')::date AS day, 'device_id', device_id, %[2]s
+		FROM events WHERE %[3]s AND device_id IS NOT NULL AND device_id <> ''
+		GROUP BY 2, 4
+		HAVING %[2]s IS NOT NULL`, mid, agg, strings.Join(where, " AND "))
 	res, err := tx.ExecContext(ctx, q, args.list...)
 	if err != nil {
 		return 0, err

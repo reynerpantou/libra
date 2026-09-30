@@ -10,6 +10,7 @@ const paths: Record<string, string> = {
   pipe: "M4 6h10a4 4 0 0 1 0 8H10a4 4 0 0 0 0 8h10M4 6v0M20 22v0",
   gear: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z",
   plus: "M12 5v14M5 12h14",
+  target: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12ZM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z",
   x: "M18 6 6 18M6 6l12 12",
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6",
   edit: "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z",
@@ -137,3 +138,37 @@ export function Stat({ label, value, sub }: { label: string; value: ReactNode; s
 }
 
 export const seriesColor = (i: number) => `var(--series-${(i % 5) + 1})`;
+
+// TrafficBar shows a layer's 1,000 buckets: this experiment's share, what's
+// still free, and what other experiments hold (out of reach).
+export function TrafficBar({ mine, free }: { mine: number; free: number }) {
+  const m = Math.min(mine, free);
+  return (
+    <div>
+      <div className="bucketbar" style={{ marginTop: 6 }}>
+        <div style={{ width: `${m / 10}%`, background: "var(--accent)" }} />
+        <div style={{ width: `${(free - m) / 10}%`, background: "var(--surface-3)" }} />
+        <div
+          style={{ width: `${(1000 - free) / 10}%`, background: "repeating-linear-gradient(45deg, var(--bad-soft), var(--bad-soft) 4px, transparent 4px, transparent 8px)" }}
+          title="Held by other experiments in this layer"
+        />
+      </div>
+      <div className="legend small" style={{ marginTop: 4 }}>
+        <span>
+          <i style={{ background: "var(--accent)" }} />
+          this experiment {(m / 10).toFixed(m % 10 ? 1 : 0)}%
+        </span>
+        <span>
+          <i style={{ background: "var(--surface-3)" }} />
+          free {((free - m) / 10).toFixed((free - m) % 10 ? 1 : 0)}%
+        </span>
+        {free < 1000 && (
+          <span>
+            <i style={{ background: "var(--bad-soft)" }} />
+            other experiments {((1000 - free) / 10).toFixed((1000 - free) % 10 ? 1 : 0)}%
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}

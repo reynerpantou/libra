@@ -119,13 +119,13 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 		groupIDs[g.name] = id
 	}
 	layerIDs := map[string]int64{}
-	for _, l := range []struct{ name, desc string }{
-		{"search_ranking", "Ranking and relevance experiments (mutually exclusive)"},
-		{"search_ui", "Search result page layout and ads placement"},
+	for _, l := range []struct{ name, desc, diversion string }{
+		{"search_ranking", "Ranking and relevance experiments (mutually exclusive), split by user", assign.DiversionUser},
+		{"search_ui", "Search result page layout and ads placement, split by device", assign.DiversionDevice},
 	} {
 		var id int64
-		if err := tx.QueryRowContext(ctx, `INSERT INTO layers (name, description, salt) VALUES ($1, $2, $3) RETURNING id`,
-			l.name, l.desc, "demo-"+l.name).Scan(&id); err != nil {
+		if err := tx.QueryRowContext(ctx, `INSERT INTO layers (name, description, salt, diversion) VALUES ($1, $2, $3, $4) RETURNING id`,
+			l.name, l.desc, "demo-"+l.name, l.diversion).Scan(&id); err != nil {
 			return err
 		}
 		layerIDs[l.name] = id
@@ -141,13 +141,13 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 	exps := []struct {
 		name, hypothesis, layer, group, status string
 		traffic                                int
-		targeting                              []assign.Rule
+		targeting                              assign.Targeting
 		variants                               []variant
 	}{
 		{
 			"Ranking formula v2", "Adding a price-competitiveness boost to the ranking formula raises CTR and CVR, lifting search GMV per user.",
 			"search_ranking", "Search core", assign.StatusActive, 500,
-			[]assign.Rule{{Attr: "region", Op: "in", Values: []string{"ID", "SG", "MY", "TH"}}},
+			assign.Targeting{Groups: [][]assign.Rule{{{Attr: "region", Op: "in", Values: []string{"ID", "SG", "MY", "TH"}}}}},
 			[]variant{
 				{"control", "Current formula", true, 500, map[string]any{"search": map[string]any{"ranking": map[string]any{"formula": "ctr * cvr", "price_boost": 0}}}},
 				{"treatment", "Price boost", false, 500, map[string]any{"search": map[string]any{"ranking": map[string]any{"formula": "ctr * cvr * price_score", "price_boost": 0.3}}}},
@@ -155,7 +155,7 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 		},
 		{
 			"Ads slot position", "Moving the first ad slot up raises ads GMV without hurting overall search GMV.",
-			"search_ui", "Ads health", assign.StatusActive, 600, nil,
+			"search_ui", "Ads health", assign.StatusActive, 600, assign.Targeting{},
 			[]variant{
 				{"control", "Ad at slot 4", true, 340, map[string]any{"search": map[string]any{"ads": map[string]any{"first_slot": 4}}}},
 				{"slot_2", "Ad at slot 2", false, 330, map[string]any{"search": map[string]any{"ads": map[string]any{"first_slot": 2}}}},
@@ -164,7 +164,7 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 		},
 		{
 			"Query autocomplete", "Showing autocomplete suggestions increases searches per user.",
-			"search_ranking", "Search funnel", assign.StatusDraft, 300, nil,
+			"search_ranking", "Search funnel", assign.StatusDraft, 300, assign.Targeting{},
 			[]variant{
 				{"control", "No suggestions", true, 500, map[string]any{"search": map[string]any{"autocomplete": false}}},
 				{"treatment", "Suggestions", false, 500, map[string]any{"search": map[string]any{"autocomplete": true}}},
@@ -172,7 +172,7 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 		},
 	}
 	for i, e := range exps {
-		targeting, _ := json.Marshal(orEmptyRules(e.targeting))
+		targeting, _ := json.Marshal(e.targeting)
 		var id int64
 		var owner any
 		if ownerID > 0 {
@@ -235,13 +235,6 @@ func orEmpty(f []map[string]any) []map[string]any {
 	return f
 }
 
-func orEmptyRules(r []assign.Rule) []assign.Rule {
-	if r == nil {
-		return []assign.Rule{}
-	}
-	return r
-}
-
 // Options control traffic generation.
 type Options struct {
 	Business string // business key events are sent to (default "search")
@@ -259,6 +252,7 @@ type Stats struct {
 
 type userProfile struct {
 	id       string
+	device   string
 	attrs    map[string]any
 	activity float64 // chance of a session on a given day
 	ctr      float64
@@ -316,7 +310,8 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 		}
 		users[i] = userProfile{
 			id:       fmt.Sprintf("demo-%s-%06d", o.Business, i),
-			attrs:    map[string]any{"region": region, "os": os, "app_version": fmt.Sprintf("10.%d.0", 1+rng.Intn(5))},
+			device:   fmt.Sprintf("dev-%s-%06d", o.Business, i),
+			attrs:    map[string]any{"region": region, "os": os, "device": os, "app_version": fmt.Sprintf("10.%d.0", 1+rng.Intn(5))},
 			activity: 0.15 + 0.5*rng.Float64(),
 			ctr:      0.04 + 0.1*rng.Float64(),
 			cvr:      0.04 + 0.12*rng.Float64(),
@@ -362,14 +357,14 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 				continue
 			}
 			ts := dayStart.Add(time.Duration(rng.Int63n(int64(span))))
-			res := snap.Resolve(assign.Request{UnitID: u.id, Business: o.Business, Attrs: u.attrs}, false)
+			res := snap.Resolve(assign.Request{UserID: u.id, DeviceID: u.device, Business: o.Business, Attrs: u.attrs}, false)
 			fx := effects(res.Params, u.attrs)
 			for _, h := range res.Hits {
-				key := fmt.Sprintf("%d:%s", h.ExperimentID, u.id)
+				key := fmt.Sprintf("%d:%s", h.ExperimentID, h.UnitID)
 				if h.Source == assign.SourceTraffic && !exposed[key] {
 					exposed[key] = true
 					exposures = append(exposures, serving.Exposure{
-						ExperimentID: h.ExperimentID, VariantID: h.VariantID, UnitID: u.id, TS: ts,
+						ExperimentID: h.ExperimentID, VariantID: h.VariantID, UnitID: h.UnitID, UnitType: h.UnitType, TS: ts,
 						Attrs: serving.DimensionAttrs(u.attrs),
 					})
 				}
@@ -379,7 +374,7 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 				t := ts.Add(time.Duration(s) * 40 * time.Second)
 				impressions := 10 + rng.Intn(11)
 				props, _ := json.Marshal(map[string]any{"impressions": impressions, "query_len": 1 + rng.Intn(5)})
-				events = append(events, serving.Event{BusinessID: bid, Name: "search", UnitID: u.id, TS: t, Props: props})
+				events = append(events, serving.Event{BusinessID: bid, Name: "search", UnitID: u.id, DeviceID: u.device, TS: t, Props: props})
 				ctr := math.Min(0.9, u.ctr*fx.ctr)
 				cvr := math.Min(0.9, u.cvr*fx.cvr)
 				for k := 0; k < impressions; k++ {
@@ -387,19 +382,19 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 						continue
 					}
 					ct := t.Add(time.Duration(5+k) * time.Second)
-					events = append(events, serving.Event{BusinessID: bid, Name: "search_click", UnitID: u.id, TS: ct, Props: []byte(`{"position":` + fmt.Sprint(k+1) + `}`)})
+					events = append(events, serving.Event{BusinessID: bid, Name: "search_click", UnitID: u.id, DeviceID: u.device, TS: ct, Props: []byte(`{"position":` + fmt.Sprint(k+1) + `}`)})
 					if rng.Float64() < cvr {
 						isAds := rng.Float64() < fx.adsShare
 						value := math.Round(u.aov*math.Exp(0.3*rng.NormFloat64())*fx.aov*100) / 100
 						p, _ := json.Marshal(map[string]any{"source": "search", "is_ads": isAds, "items": 1 + rng.Intn(3)})
-						events = append(events, serving.Event{BusinessID: bid, Name: "order", UnitID: u.id, TS: ct.Add(2 * time.Minute), Value: value, Props: p})
+						events = append(events, serving.Event{BusinessID: bid, Name: "order", UnitID: u.id, DeviceID: u.device, TS: ct.Add(2 * time.Minute), Value: value, Props: p})
 					}
 				}
 			}
 			// Orders from other surfaces, so "search" filters matter.
 			if rng.Float64() < 0.08 {
 				p, _ := json.Marshal(map[string]any{"source": "feed", "is_ads": false})
-				events = append(events, serving.Event{BusinessID: bid, Name: "order", UnitID: u.id, TS: ts.Add(10 * time.Minute), Value: math.Round(u.aov*100) / 100, Props: p})
+				events = append(events, serving.Event{BusinessID: bid, Name: "order", UnitID: u.id, DeviceID: u.device, TS: ts.Add(10 * time.Minute), Value: math.Round(u.aov*100) / 100, Props: p})
 			}
 			if err := flush(false); err != nil {
 				return st, err

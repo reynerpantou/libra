@@ -762,7 +762,7 @@ func (s *Server) EventSummary(w http.ResponseWriter, r *http.Request) {
 func (s *Server) RecentEvents(w http.ResponseWriter, r *http.Request) {
 	bid, _ := pathID(r, "id")
 	rows, err := s.DB.QueryContext(r.Context(), `
-		SELECT id, event_name, unit_id, ts, value, props, ingested_at FROM events WHERE business_id = $1 ORDER BY id DESC LIMIT 50`, bid)
+		SELECT id, event_name, unit_id, COALESCE(device_id, ''), ts, value, props, ingested_at FROM events WHERE business_id = $1 ORDER BY id DESC LIMIT 50`, bid)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -772,6 +772,7 @@ func (s *Server) RecentEvents(w http.ResponseWriter, r *http.Request) {
 		ID         int64           `json:"id"`
 		Event      string          `json:"event"`
 		UnitID     string          `json:"unit_id"`
+		DeviceID   string          `json:"device_id"`
 		TS         time.Time       `json:"ts"`
 		Value      float64         `json:"value"`
 		Props      json.RawMessage `json:"props"`
@@ -780,7 +781,7 @@ func (s *Server) RecentEvents(w http.ResponseWriter, r *http.Request) {
 	out := []ev{}
 	for rows.Next() {
 		var e ev
-		if err := rows.Scan(&e.ID, &e.Event, &e.UnitID, &e.TS, &e.Value, &e.Props, &e.IngestedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Event, &e.UnitID, &e.DeviceID, &e.TS, &e.Value, &e.Props, &e.IngestedAt); err != nil {
 			serverError(w, r, err)
 			return
 		}

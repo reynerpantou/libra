@@ -16,9 +16,12 @@
 package assign
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,15 +46,66 @@ const (
 	SourceLaunch    = "launch"
 )
 
-// Rule is one targeting condition; all of an experiment's rules must pass.
+// Diversion is which id a layer randomizes on.
+const (
+	DiversionUser   = "user_id"
+	DiversionDevice = "device_id"
+)
+
+// Rule is one targeting condition.
 type Rule struct {
 	Attr   string   `json:"attr"`
 	Op     string   `json:"op"`
 	Values []string `json:"values"`
 }
 
+// Targeting is OR of AND-groups: a unit matches when every rule of at least
+// one group passes. No groups means everyone matches.
+//
+//	(device = android AND app_version >= 3.400) OR (device = ios AND app_version >= 2.300) OR device in (desktop, mobile)
+type Targeting struct {
+	Groups [][]Rule `json:"groups"`
+}
+
+// UnmarshalJSON also accepts the older form, a flat list of rules that all
+// had to match, as a single group.
+func (t *Targeting) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) > 0 && b[0] == '[' {
+		var rules []Rule
+		if err := json.Unmarshal(b, &rules); err != nil {
+			return err
+		}
+		t.Groups = nil
+		if len(rules) > 0 {
+			t.Groups = [][]Rule{rules}
+		}
+		return nil
+	}
+	var raw struct {
+		Groups [][]Rule `json:"groups"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	t.Groups = raw.Groups
+	return nil
+}
+
+// MarshalJSON always writes groups as a list, never null.
+func (t Targeting) MarshalJSON() ([]byte, error) {
+	g := t.Groups
+	if g == nil {
+		g = [][]Rule{}
+	}
+	return json.Marshal(struct {
+		Groups [][]Rule `json:"groups"`
+	}{g})
+}
+
 // Ops lists the supported targeting operators.
-var Ops = []string{"eq", "neq", "in", "not_in", "gt", "gte", "lt", "lte", "version_gte", "version_lt", "exists", "not_exists"}
+var Ops = []string{"eq", "neq", "in", "not_in", "gt", "gte", "lt", "lte",
+	"version_eq", "version_gt", "version_gte", "version_lt", "version_lte", "exists", "not_exists"}
 
 type Variant struct {
 	ID        int64          `json:"id"`
@@ -70,18 +124,20 @@ type Experiment struct {
 	Status      string
 	Salt        string
 	Buckets     []int // held buckets, in the order they were added
-	Targeting   []Rule
+	Targeting   Targeting
 	Variants    []Variant
-	Whitelist   map[string]int64 // unit id -> forced variant id
+	Whitelist   map[string]int64 // unit id (of the layer's diversion) -> forced variant id
 	LaunchedVar int64            // for launched experiments
 	LaunchOrder int64            // launch time (unix) — later launches override earlier ones
+	StartOrder  int64            // start time (unix); 0 = never started
 }
 
 type Layer struct {
-	ID    int64
-	Name  string
-	Salt  string
-	owner [Buckets]*Experiment
+	ID        int64
+	Name      string
+	Salt      string
+	Diversion string // user_id | device_id
+	owner     [Buckets]*Experiment
 }
 
 // Snapshot is an immutable view of everything serving needs.
@@ -139,11 +195,25 @@ func PickVariant(vs []Variant, bucket int) *Variant {
 	return nil
 }
 
-// Request is what a caller knows about the unit.
+// Request is what a caller knows about the unit. Each layer uses the id of
+// its diversion type; UnitID is the older name for UserID.
 type Request struct {
-	UnitID   string         `json:"unit_id"`
+	UserID   string         `json:"user_id,omitempty"`
+	DeviceID string         `json:"device_id,omitempty"`
+	UnitID   string         `json:"unit_id,omitempty"`
 	Business string         `json:"business,omitempty"` // only this business's experiments; empty = all
 	Attrs    map[string]any `json:"attrs,omitempty"`
+}
+
+// ID returns the request's id for a diversion type.
+func (r Request) ID(diversion string) string {
+	if diversion == DiversionDevice {
+		return r.DeviceID
+	}
+	if r.UserID != "" {
+		return r.UserID
+	}
+	return r.UnitID
 }
 
 // Hit is one experiment the unit is in.
@@ -152,7 +222,9 @@ type Hit struct {
 	Experiment   string `json:"experiment"`
 	VariantID    int64  `json:"variant_id"`
 	Variant      string `json:"variant"`
-	Source       string `json:"source"` // experiment | whitelist | launch
+	Source       string `json:"source"`    // experiment | whitelist | launch
+	UnitType     string `json:"unit_type"` // the id this assignment is keyed on
+	UnitID       string `json:"unit_id,omitempty"`
 }
 
 // Step explains the decision for one experiment (hit diagnosis).
@@ -202,11 +274,17 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 			record("other_business", "experiment belongs to business "+e.BusinessKey)
 			continue
 		}
+		l := s.Layers[e.LayerID]
+		diversion := DiversionUser
+		if l != nil && l.Diversion != "" {
+			diversion = l.Diversion
+		}
+		unit := req.ID(diversion)
 		// Whitelisted units get their variant whenever the experiment isn't
 		// finished — including before it starts, which is how QA checks it.
-		if vid, ok := e.Whitelist[req.UnitID]; ok && whitelistable(e.Status) {
+		if vid, ok := e.Whitelist[unit]; ok && unit != "" && whitelistable(e.Status) {
 			if v := variantByID(e, vid); v != nil {
-				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, SourceWhitelist})
+				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, SourceWhitelist, diversion, unit})
 				assigned = append(assigned, struct {
 					e *Experiment
 					v *Variant
@@ -227,7 +305,7 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 		}
 		if e.Status == StatusLaunched {
 			if v := variantByID(e, e.LaunchedVar); v != nil {
-				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, SourceLaunch})
+				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, SourceLaunch, diversion, unit})
 				launched = append(launched, struct {
 					e *Experiment
 					v *Variant
@@ -238,12 +316,15 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 			}
 			continue
 		}
-		l := s.Layers[e.LayerID]
 		if l == nil {
 			record("not_in_traffic", "layer is missing")
 			continue
 		}
-		lb := LayerBucket(l.Salt, req.UnitID)
+		if unit == "" {
+			record("missing_id", "this experiment's layer splits traffic by "+diversion+", and the request has none")
+			continue
+		}
+		lb := LayerBucket(l.Salt, unit)
 		step.LayerBucket = lb
 		if owner := l.owner[lb]; owner != e {
 			if owner == nil {
@@ -253,24 +334,26 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 			}
 			continue
 		}
-		vb := VariantBucket(e.Salt, req.UnitID)
+		vb := VariantBucket(e.Salt, unit)
 		step.VariantBucket = vb
 		v := PickVariant(e.Variants, vb)
 		if v == nil {
 			record("not_in_traffic", fmt.Sprintf("variant bucket %d is beyond the variant weights", vb))
 			continue
 		}
-		res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, SourceTraffic})
+		res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, SourceTraffic, diversion, unit})
 		assigned = append(assigned, struct {
 			e *Experiment
 			v *Variant
 		}{e, v})
-		record("assigned", fmt.Sprintf("layer bucket %d, variant bucket %d → %s", lb, vb, v.Key))
+		record("assigned", fmt.Sprintf("%s %s: layer bucket %d, variant bucket %d → %s", diversion, unit, lb, vb, v.Key))
 	}
 
 	// Launched configs are the new defaults; running experiments override
-	// them. Between running experiments the older one (lower id) wins.
+	// them. Between experiments the one that started first wins (see
+	// PriorityRules).
 	sort.SliceStable(launched, func(i, j int) bool { return launched[i].e.LaunchOrder < launched[j].e.LaunchOrder })
+	sort.SliceStable(assigned, func(i, j int) bool { return Before(assigned[i].e, assigned[j].e) })
 	m := newMerger()
 	for _, h := range launched {
 		m.apply(h.e.ID, h.v.Params, true)
@@ -282,6 +365,31 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 	res.Params = m.result()
 	res.Conflicts = m.conflicts
 	return res
+}
+
+// PriorityRules explains, in order, how conflicting parameters are resolved.
+var PriorityRules = []string{
+	"Experiments in the same layer never share a unit, so they never conflict.",
+	"A running experiment (or a test-user assignment) overrides a fully launched variant's parameters.",
+	"Between two experiments that set the same parameter, the one that started first wins; experiments not started yet come after all started ones.",
+	"If they started at the same second, the smaller experiment id wins.",
+	"Between two launched variants, the one launched most recently wins.",
+}
+
+// Before reports whether a takes priority over b when both set a parameter.
+func Before(a, b *Experiment) bool {
+	sa, sb := startKey(a), startKey(b)
+	if sa != sb {
+		return sa < sb
+	}
+	return a.ID < b.ID
+}
+
+func startKey(e *Experiment) int64 {
+	if e.StartOrder <= 0 {
+		return math.MaxInt64
+	}
+	return e.StartOrder
 }
 
 func whitelistable(status string) bool {
@@ -303,8 +411,26 @@ func variantByID(e *Experiment, id int64) *Variant {
 
 // ---- targeting ----
 
-// Match reports whether attrs satisfy every rule, and if not, why.
-func Match(rules []Rule, attrs map[string]any) (bool, string) {
+// Match reports whether attrs satisfy the targeting, and if not, why.
+func Match(t Targeting, attrs map[string]any) (bool, string) {
+	if len(t.Groups) == 0 {
+		return true, ""
+	}
+	var why []string
+	for gi, g := range t.Groups {
+		ok, reason := matchAll(g, attrs)
+		if ok {
+			return true, ""
+		}
+		if len(t.Groups) > 1 {
+			reason = fmt.Sprintf("group %d: %s", gi+1, reason)
+		}
+		why = append(why, reason)
+	}
+	return false, strings.Join(why, "; ")
+}
+
+func matchAll(rules []Rule, attrs map[string]any) (bool, string) {
 	for _, r := range rules {
 		raw, present := attrs[r.Attr]
 		val := ""
@@ -382,10 +508,16 @@ func evalRule(r Rule, val string, present bool) bool {
 		default:
 			return a <= b
 		}
+	case "version_eq":
+		return CompareVersions(val, first) == 0
+	case "version_gt":
+		return CompareVersions(val, first) > 0
 	case "version_gte":
 		return CompareVersions(val, first) >= 0
 	case "version_lt":
 		return CompareVersions(val, first) < 0
+	case "version_lte":
+		return CompareVersions(val, first) <= 0
 	}
 	return false
 }
@@ -411,26 +543,56 @@ func CompareVersions(a, b string) int {
 	return 0
 }
 
-// ValidateRules checks rules are well-formed.
-func ValidateRules(rules []Rule) error {
-	for _, r := range rules {
-		if r.Attr == "" || len(r.Attr) > 64 {
-			return fmt.Errorf("targeting rule needs an attribute name")
+// ValidateTargeting checks targeting is well-formed. known, if not nil,
+// lists the attributes rules may use.
+func ValidateTargeting(t Targeting, known map[string]bool) error {
+	if len(t.Groups) > 20 {
+		return fmt.Errorf("targeting can have at most 20 OR groups")
+	}
+	for gi, g := range t.Groups {
+		if len(g) == 0 {
+			return fmt.Errorf("OR group %d is empty; add a condition or remove it", gi+1)
 		}
-		known := false
-		for _, op := range Ops {
-			if op == r.Op {
-				known = true
+		if len(g) > 20 {
+			return fmt.Errorf("a group can have at most 20 conditions")
+		}
+		for _, r := range g {
+			if r.Attr == "" || len(r.Attr) > 64 {
+				return fmt.Errorf("every condition needs an attribute")
 			}
-		}
-		if !known {
-			return fmt.Errorf("unknown targeting operator %q", r.Op)
-		}
-		if r.Op != "exists" && r.Op != "not_exists" && len(r.Values) == 0 {
-			return fmt.Errorf("targeting rule on %q needs a value", r.Attr)
+			if known != nil && !known[r.Attr] {
+				return fmt.Errorf("attribute %q isn't registered; add it under Targeting attributes first", r.Attr)
+			}
+			ok := false
+			for _, op := range Ops {
+				if op == r.Op {
+					ok = true
+				}
+			}
+			if !ok {
+				return fmt.Errorf("unknown targeting operator %q", r.Op)
+			}
+			if r.Op != "exists" && r.Op != "not_exists" && len(r.Values) == 0 {
+				return fmt.Errorf("the condition on %q needs a value", r.Attr)
+			}
 		}
 	}
 	return nil
+}
+
+// Attrs lists the attributes the targeting uses.
+func (t Targeting) Attrs() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, g := range t.Groups {
+		for _, r := range g {
+			if !seen[r.Attr] {
+				seen[r.Attr] = true
+				out = append(out, r.Attr)
+			}
+		}
+	}
+	return out
 }
 
 // ---- traffic allocation ----

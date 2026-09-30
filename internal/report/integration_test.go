@@ -83,6 +83,30 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("total vs per-user lift differ")
 	}
 
+	// The ads experiment's layer splits by device: its units are devices, and
+	// its metrics come from the per-device measures.
+	var adsID int64
+	if err := db.QueryRow(`SELECT id FROM experiments WHERE name = 'Ads slot position'`).Scan(&adsID); err != nil {
+		t.Fatal(err)
+	}
+	if adsID < 100000000000000 {
+		t.Errorf("experiment ids should be random 15-digit numbers, got %d", adsID)
+	}
+	var devUnits, userUnits int
+	_ = db.QueryRow(`SELECT count(*) FILTER (WHERE unit_type = 'device_id'), count(*) FILTER (WHERE unit_type = 'user_id') FROM assignments WHERE experiment_id = $1`, adsID).Scan(&devUnits, &userUnits)
+	if devUnits == 0 || userUnits != 0 {
+		t.Errorf("ads experiment units: %d devices, %d users", devUnits, userUnits)
+	}
+	ra, err := report.Compute(ctx, db, adsID, report.Options{MetricIDs: defs.Order})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range ra.Segments[0].Metrics {
+		if m.Key == "ads_share" && (m.Comparisons[0].Verdict != "changed" || float64(m.Comparisons[0].RelDiff) < 0.1) {
+			t.Errorf("ads share should rise with an earlier ad slot: %+v", m.Comparisons[0])
+		}
+	}
+
 	// Dimension breakdown returns segments by region.
 	rd, err := report.Compute(ctx, db, expID, report.Options{MetricIDs: defs.Order[:1], Dimension: "region"})
 	if err != nil {

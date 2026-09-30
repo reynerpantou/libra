@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import ProviderIcon from "../components/ProviderIcon";
-import { api, ApiError } from "../lib/api";
+import { api, ApiError, BASE } from "../lib/api";
 import { Brand } from "./Login";
 
 // Claiming the owner account with the one-time link the server printed to
@@ -52,7 +52,7 @@ export default function Setup() {
         {!needed ? (
           <>
             <p className="muted">Libra already has an owner, so this setup link no longer works.</p>
-            <a className="btn" href="/login">
+            <a className="btn" href={`${BASE}/login`}>
               Back to sign-in
             </a>
           </>

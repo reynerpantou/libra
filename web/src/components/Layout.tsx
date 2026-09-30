@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { asset } from "../lib/api";
 import { useAuth, useCan } from "../lib/auth";
 import { Icon } from "./ui";
 
@@ -41,7 +42,7 @@ export default function Layout() {
     <div className="shell">
       <div className="topbar">
         <div className="brand" style={{ padding: 0 }}>
-          <img src="/icon.svg" alt="" />
+          <img src={asset("icon.svg")} alt="" />
           Libra
         </div>
         <button className="icon-btn" onClick={() => setOpen(!open)} aria-label="Menu">
@@ -50,7 +51,7 @@ export default function Layout() {
       </div>
       <aside className={`sidebar ${open ? "open" : ""}`}>
         <div className="brand">
-          <img src="/icon.svg" alt="" />
+          <img src={asset("icon.svg")} alt="" />
           Libra
         </div>
         <nav className="nav">
@@ -62,6 +63,9 @@ export default function Layout() {
           </NavLink>
           <NavLink to="/layers">
             <Icon name="layers" /> Traffic layers
+          </NavLink>
+          <NavLink to="/attributes">
+            <Icon name="target" /> Targeting attributes
           </NavLink>
           <div className="nav-label">Operate</div>
           <NavLink to="/tools">

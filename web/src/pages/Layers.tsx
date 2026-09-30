@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { trafficPct } from "../lib/format";
 import { useAsync } from "../lib/hooks";
+import type { Diversion } from "../lib/types";
 
 export default function Layers() {
   const layers = useAsync(() => api.layers(), []);
@@ -12,6 +13,7 @@ export default function Layers() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [diversion, setDiversion] = useState<Diversion>("user_id");
   const [error, setError] = useState("");
   return (
     <div className="page">
@@ -42,7 +44,10 @@ export default function Layers() {
             <section key={l.id} className="card card-pad stack-sm">
               <div className="row-between">
                 <div>
-                  <h2>{l.name}</h2>
+                  <div className="row">
+                    <h2>{l.name}</h2>
+                    <span className="badge b-accent">split by {l.diversion === "device_id" ? "device id" : "user id"}</span>
+                  </div>
                   {l.description && <p className="faint small">{l.description}</p>}
                 </div>
                 <div className="right">
@@ -81,7 +86,7 @@ export default function Layers() {
                 className="btn btn-primary"
                 onClick={async () => {
                   try {
-                    await api.createLayer(name, description);
+                    await api.createLayer(name, description, diversion);
                     setOpen(false);
                     setName("");
                     setDescription("");
@@ -101,6 +106,15 @@ export default function Layers() {
           </Field>
           <Field label="Description">
             <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} />
+          </Field>
+          <Field
+            label="Diversion (split traffic by)"
+            hint="Every experiment in the layer randomizes on this id. User id keeps a person's experience consistent across devices; device id works before sign-in. It can't change later."
+          >
+            <select className="input" value={diversion} onChange={(e) => setDiversion(e.target.value as Diversion)}>
+              <option value="user_id">User id</option>
+              <option value="device_id">Device id</option>
+            </select>
           </Field>
           <ErrorBox error={error} />
         </Modal>

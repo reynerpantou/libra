@@ -1,5 +1,10 @@
 import type {
   ApiKey,
+  Attribute,
+  AttrType,
+  Diversion,
+  ParamUse,
+  Targeting,
   AuditEntry,
   Business,
   EventSummary,
@@ -11,12 +16,15 @@ import type {
   MetricGroup,
   PipelineStatus,
   Report,
-  Rule,
   Step,
   TrendPoint,
   User,
   Variant,
 } from "./types";
+
+// Where the app is served from ("/libra/"), without the trailing slash.
+export const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+export const asset = (path: string) => `${BASE}/${path.replace(/^\//, "")}`;
 
 export class ApiError extends Error {
   code: string;
@@ -37,7 +45,7 @@ export async function request<T>(method: string, path: string, body?: unknown): 
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET") headers["X-CSRF-Token"] = csrfToken();
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${BASE}/api${path}`, {
     method,
     headers,
     credentials: "same-origin",
@@ -54,7 +62,7 @@ export async function request<T>(method: string, path: string, body?: unknown): 
   if (!res.ok) {
     const err = data as { code?: string; message?: string } | null;
     if (res.status === 401 && !path.startsWith("/auth") && !path.startsWith("/setup") && path !== "/me") {
-      window.location.assign("/login");
+      window.location.assign(`${BASE}/login`);
     }
     throw new ApiError(res.status, err?.code ?? "error", err?.message ?? `request failed (${res.status})`);
   }
@@ -76,7 +84,7 @@ export interface ExperimentInput {
   description: string;
   owner_id: number | null;
   traffic_target: number;
-  targeting: Rule[];
+  targeting: Targeting;
   metric_group_id: number | null;
   variants: Variant[];
 }
@@ -144,7 +152,7 @@ export const api = {
     ),
 
   layers: () => request<Layer[]>("GET", "/layers"),
-  createLayer: (name: string, description: string) => request<Layer>("POST", "/layers", { name, description }),
+  createLayer: (name: string, description: string, diversion: Diversion) => request<Layer>("POST", "/layers", { name, description, diversion }),
   updateLayer: (id: number, name: string, description: string) => request<void>("PUT", `/layers/${id}`, { name, description }),
 
   experiments: (p: { business?: string; status?: string; q?: string; mine?: string } = {}) =>
@@ -166,11 +174,20 @@ export const api = {
     request<TrendPoint[]>("GET", `/experiments/${id}/trend${qs({ metric, ...p })}`),
   exposures: (id: number) => request<{ day: string; variants: Record<string, number> }[]>("GET", `/experiments/${id}/exposures`),
 
-  diagnose: (unit_id: string, business: string, attrs: Record<string, unknown>) =>
+  attributes: () => request<Attribute[]>("GET", "/attributes"),
+  discoveredAttributes: () => request<{ key: string; seen: number; values: string[] }[]>("GET", "/attributes/discovered"),
+  createAttribute: (a: { key: string; name: string; description: string; type: AttrType; options: string[] }) =>
+    request<Attribute>("POST", "/attributes", a),
+  updateAttribute: (id: number, a: { key: string; name: string; description: string; type: AttrType; options: string[] }) =>
+    request<void>("PUT", `/attributes/${id}`, a),
+  deleteAttribute: (id: number) => request<void>("DELETE", `/attributes/${id}`),
+  paramUsage: (id: number) => request<{ priority_rules: string[]; paths: Record<string, ParamUse[]> }>("GET", `/experiments/${id}/params`),
+
+  diagnose: (user_id: string, device_id: string, business: string, attrs: Record<string, unknown>) =>
     request<{ snapshot_version: number; result: { hits: Hit[]; params: Record<string, unknown>; trace: Step[]; conflicts?: unknown[] } }>(
       "POST",
       "/tools/diagnose",
-      { unit_id, business, attrs }
+      { user_id, device_id, business, attrs }
     ),
   paramSearch: (q: string) =>
     request<{ experiment_id: number; experiment: string; business: string; status: string; variant: string; path: string }[]>(

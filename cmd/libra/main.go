@@ -107,7 +107,7 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	admin := func(h http.HandlerFunc) http.Handler { return signedIn("admin", h) }
 
 	// Sign-in
-	limited := http.RedirectHandler("/login?error=rate_limited", http.StatusSeeOther)
+	limited := http.RedirectHandler(config.BasePath+"/login?error=rate_limited", http.StatusSeeOther)
 	api.Handle("GET /auth/providers", http.HandlerFunc(s.AuthProviders))
 	api.Handle("GET /auth/{provider}/start", loginRL.WrapWith(http.HandlerFunc(s.AuthStart), limited))
 	api.Handle("GET /auth/{provider}/callback", loginRL.WrapWith(http.HandlerFunc(s.AuthCallback), limited))
@@ -165,6 +165,12 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("GET /experiments/{id}/report", viewer(s.ExperimentReport))
 	api.Handle("GET /experiments/{id}/trend", viewer(s.ExperimentTrend))
 	api.Handle("GET /experiments/{id}/exposures", viewer(s.ExposureDaily))
+	api.Handle("GET /experiments/{id}/params", viewer(s.ParamUsage))
+	api.Handle("GET /attributes", viewer(s.ListAttributes))
+	api.Handle("GET /attributes/discovered", viewer(s.DiscoveredAttributes))
+	api.Handle("POST /attributes", editor(s.CreateAttribute))
+	api.Handle("PUT /attributes/{id}", editor(s.UpdateAttribute))
+	api.Handle("DELETE /attributes/{id}", editor(s.DeleteAttribute))
 
 	// Tools and pipeline
 	api.Handle("POST /tools/diagnose", viewer(s.Diagnose))
@@ -179,15 +185,22 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("POST /v1/events", keys.Require("ingest")(http.HandlerFunc(s.IngestEvents)))
 
 	mux := http.NewServeMux()
-	mux.Handle("/api/", http.StripPrefix("/api", middleware.NoStore(api)))
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+	base := config.BasePath
+	mux.Handle(base+"/api/", http.StripPrefix(base+"/api", middleware.NoStore(api)))
+	health := func(w http.ResponseWriter, r *http.Request) {
 		if err := db.PingContext(r.Context()); err != nil {
 			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		fmt.Fprintf(w, "ok (config v%d)\n", s.Store.Snapshot().Version)
+	}
+	mux.HandleFunc("GET /healthz", health)
+	mux.HandleFunc("GET "+base+"/healthz", health)
+	mux.Handle(base+"/", http.StripPrefix(base, s.SPAHandler()))
+	// Everything else (/, /libra without the slash, old bookmarks) goes to the app.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, base+"/", http.StatusFound)
 	})
-	mux.Handle("/", s.SPAHandler())
 	return middleware.Chain(mux, middleware.Recover, middleware.Logger, middleware.SecurityHeaders(cfg.CookieSecure))
 }
 
@@ -212,7 +225,7 @@ func reportSignIn(cfg config.Config) {
 		log.Printf("sign-in: no provider configured, so no sign-in buttons will show — add LIBRA_GOOGLE_CLIENT_ID and LIBRA_GOOGLE_CLIENT_SECRET to .env")
 		return
 	}
-	log.Printf("sign-in: %s (callbacks go to %s/api/auth/…/callback)", strings.Join(on, " + "), cfg.PublicURL)
+	log.Printf("sign-in: %s (callbacks go to %s/api/auth/…/callback)", strings.Join(on, " + "), cfg.AppURL())
 }
 
 // announceSetup prints a fresh owner setup link while nobody can sign in

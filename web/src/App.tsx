@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import { Loading } from "./components/ui";
 import { useAuth } from "./lib/auth";
+import Attributes from "./pages/Attributes";
 import BusinessDetail from "./pages/BusinessDetail";
 import Businesses from "./pages/Businesses";
 import ExperimentDetail from "./pages/ExperimentDetail";
@@ -43,6 +44,7 @@ export default function App() {
         <Route path="/businesses" element={<Businesses />} />
         <Route path="/businesses/:id" element={<BusinessDetail />} />
         <Route path="/layers" element={<Layers />} />
+        <Route path="/attributes" element={<Attributes />} />
         <Route path="/tools" element={<Tools />} />
         <Route path="/pipeline" element={<Pipeline />} />
         <Route path="/integrate" element={<Integrate />} />

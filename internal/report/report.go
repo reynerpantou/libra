@@ -428,7 +428,7 @@ func moments(ctx context.Context, db *sql.DB, expID int64, from, to time.Time, m
 	}
 	var q strings.Builder
 	fmt.Fprintf(&q, `WITH u AS (
-		SELECT unit_id, variant_id, first_day, %s AS seg FROM assignments
+		SELECT unit_id, unit_type, variant_id, first_day, %s AS seg FROM assignments
 		WHERE experiment_id = $1 AND NOT multi_variant AND first_day BETWEEN $2 AND $3
 	)`, seg)
 	if k > 0 {
@@ -439,7 +439,7 @@ func moments(ctx context.Context, db *sql.DB, expID int64, from, to time.Time, m
 			fmt.Fprintf(&q, `, COALESCE(%s(d.value) FILTER (WHERE d.measure_id = %d), 0) AS m%d`, agg, id, i)
 		}
 		fmt.Fprintf(&q, ` FROM u LEFT JOIN unit_measure_daily d
-			ON d.unit_id = u.unit_id AND d.measure_id = ANY($%d::bigint[]) AND d.day BETWEEN u.first_day AND $3
+			ON d.unit_id = u.unit_id AND d.unit_type = u.unit_type AND d.measure_id = ANY($%d::bigint[]) AND d.day BETWEEN u.first_day AND $3
 			GROUP BY u.unit_id, u.variant_id, u.seg)`, len(args))
 	} else {
 		q.WriteString(`, m AS (SELECT * FROM u)`)
@@ -596,7 +596,7 @@ func Preview(ctx context.Context, db *sql.DB, defs *Definitions, src string, fro
 	vars := map[string]float64{}
 	var users int64
 	if err := db.QueryRowContext(ctx, `
-		SELECT count(DISTINCT unit_id) FROM unit_measure_daily d JOIN measures m ON m.id = d.measure_id
+		SELECT count(DISTINCT unit_id) FROM unit_measure_daily d JOIN measures m ON m.id = d.measure_id AND d.unit_type = 'user_id'
 		WHERE m.business_id = $1 AND d.day BETWEEN $2 AND $3`, defs.BusinessID, from, to).Scan(&users); err != nil {
 		return nil, err
 	}
@@ -606,7 +606,7 @@ func Preview(ctx context.Context, db *sql.DB, defs *Definitions, src string, fro
 		m := defs.Measures[k]
 		var v sql.NullFloat64
 		if err := db.QueryRowContext(ctx, fmt.Sprintf(`
-			SELECT sum(v) FROM (SELECT %s(value) AS v FROM unit_measure_daily WHERE measure_id = $1 AND day BETWEEN $2 AND $3 GROUP BY unit_id) s`,
+			SELECT sum(v) FROM (SELECT %s(value) AS v FROM unit_measure_daily WHERE measure_id = $1 AND unit_type = 'user_id' AND day BETWEEN $2 AND $3 GROUP BY unit_id) s`,
 			pipeline.WindowAgg(m.Aggregation)), m.ID, from, to).Scan(&v); err != nil {
 			return nil, err
 		}

@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+// BasePath is where Libra lives on its host: the web app at /libra/, the
+// API at /libra/api/. It's fixed because the web app is built for it
+// (web/vite.config.ts `base`); other paths are free for other apps behind
+// the same domain.
+const BasePath = "/libra"
+
 type Config struct {
 	Addr         string
 	DatabaseURL  string
@@ -30,10 +36,11 @@ type Config struct {
 
 	GoogleClientID     string
 	GoogleClientSecret string
-	AppleClientID      string
-	AppleTeamID        string
-	AppleKeyID         string
-	ApplePrivateKey    string
+
+	AppleClientID   string
+	AppleTeamID     string
+	AppleKeyID      string
+	ApplePrivateKey string
 
 	// Test-only: point a provider at a fake server.
 	GoogleTestBase string
@@ -97,6 +104,9 @@ func Load() Config {
 		AppleTestBase:      env("LIBRA_APPLE_TEST_BASE", ""),
 	}
 }
+
+// AppURL is the public address of the web app, e.g. https://x.com/libra.
+func (c Config) AppURL() string { return c.PublicURL + BasePath }
 
 // envOrFile reads K, or the file named by K_FILE (for keys mounted as files).
 func envOrFile(k string) string {
