@@ -1,14 +1,14 @@
 import { useMemo, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
-import { ErrorBox, Icon, Loading, Tabs } from "../components/ui";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Empty, ErrorBox, Icon, Loading, Tabs } from "../components/ui";
 import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { useAsync } from "../lib/hooks";
-import type { EventSummary, Scope } from "../lib/types";
+import type { Business, EventSummary, Platform, Scope } from "../lib/types";
 import { Groups, Measures, Metrics } from "./BusinessDetail";
-import { PlatformModal } from "./Businesses";
+import { BusinessModal, BusinessTable, PlatformModal } from "./Businesses";
 
-type Tab = "metrics" | "measures" | "groups" | "businesses";
+type Tab = "businesses" | "metrics" | "measures" | "groups";
 
 // A platform's shared definitions: measures over the events of all its
 // businesses, metrics, and groups (default groups apply to every
@@ -16,7 +16,7 @@ type Tab = "metrics" | "measures" | "groups" | "businesses";
 export default function PlatformDetail() {
   const id = Number(useParams().pid);
   const [params, setParams] = useSearchParams();
-  const tab = (params.get("tab") as Tab) || "metrics";
+  const tab = (params.get("tab") as Tab) || "businesses";
   const scope: Scope = useMemo(() => ({ kind: "platform", id }), [id]);
   const plat = useAsync(() => api.platform(id), [id]);
   const measures = useAsync(() => api.measures(scope), [scope]);
@@ -42,6 +42,7 @@ export default function PlatformDetail() {
   }, [id]);
   const isAdmin = useCan("admin");
   const [editing, setEditing] = useState(false);
+  const nav = useNavigate();
   const p = plat.data;
   if (plat.loading && !p) return <div className="page"><Loading /></div>;
   if (!p) return <div className="page"><ErrorBox error={plat.error || "Not found"} /></div>;
@@ -68,9 +69,27 @@ export default function PlatformDetail() {
           <p>{p.description}</p>
         </div>
         {isAdmin && (
-          <button className="btn" onClick={() => setEditing(true)}>
-            <Icon name="edit" /> Edit
-          </button>
+          <div className="row">
+            <button className="btn" onClick={() => setEditing(true)}>
+              <Icon name="edit" /> Edit
+            </button>
+            <button
+              className="btn btn-danger"
+              disabled={p.businesses.length > 0}
+              title={p.businesses.length > 0 ? "Move or delete its businesses first" : "Delete this platform"}
+              onClick={async () => {
+                if (!confirm(`Delete platform ${p.name} and its shared metrics?`)) return;
+                try {
+                  await api.deletePlatform(p.id);
+                  nav("/businesses");
+                } catch (e) {
+                  alert(e instanceof Error ? e.message : String(e));
+                }
+              }}
+            >
+              <Icon name="trash" /> Delete
+            </button>
+          </div>
         )}
       </div>
       <div className="alert alert-info small">
@@ -79,10 +98,10 @@ export default function PlatformDetail() {
       </div>
       <Tabs<Tab>
         tabs={[
-          ["metrics", `Metrics (${metrics.data?.length ?? 0})`],
-          ["measures", `Measures (${measures.data?.length ?? 0})`],
-          ["groups", `Metric groups (${groups.data?.length ?? 0})`],
           ["businesses", `Businesses (${p.businesses.length})`],
+          ["groups", `Metric groups (${groups.data?.length ?? 0})`],
+          ["metrics", `Shared metrics (${metrics.data?.length ?? 0})`],
+          ["measures", `Shared measures (${measures.data?.length ?? 0})`],
         ]}
         value={tab}
         onChange={(t) => setParams({ tab: t }, { replace: true })}
@@ -90,36 +109,7 @@ export default function PlatformDetail() {
       {tab === "metrics" && <Metrics scope={scope} metrics={metrics.data ?? []} measures={measures.data ?? []} reload={reloadDefs} />}
       {tab === "measures" && <Measures scope={scope} measures={measures.data ?? []} events={events.data} reload={reloadDefs} />}
       {tab === "groups" && <Groups scope={scope} groups={groups.data ?? []} metrics={metrics.data ?? []} reload={groups.reload} />}
-      {tab === "businesses" && (
-        <section className="card">
-          <div className="table-wrap">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>Business</th>
-                  <th>Key</th>
-                  <th className="num">Id</th>
-                  <th className="num">Metrics</th>
-                  <th className="num">Experiments</th>
-                </tr>
-              </thead>
-              <tbody>
-                {p.businesses.map((b) => (
-                  <tr key={b.id}>
-                    <td>
-                      <Link to={`/businesses/${b.id}`}>{b.name}</Link>
-                    </td>
-                    <td className="mono">{b.key}</td>
-                    <td className="num mono">{b.id}</td>
-                    <td className="num">{b.metrics}</td>
-                    <td className="num">{b.experiments}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
+      {tab === "businesses" && <ManageBusinesses platform={p} reload={plat.reload} />}
       {editing && (
         <PlatformModal
           platform={p}
@@ -131,5 +121,89 @@ export default function PlatformDetail() {
         />
       )}
     </div>
+  );
+}
+
+// ManageBusinesses lists the platform's businesses with search, and lets
+// admins add, edit, move and delete them.
+function ManageBusinesses({ platform, reload }: { platform: Platform; reload: () => void }) {
+  const isAdmin = useCan("admin");
+  const nav = useNavigate();
+  const all = useAsync(() => api.platforms(), []);
+  const [q, setQ] = useState("");
+  const [editing, setEditing] = useState<Business | "new" | null>(null);
+  const [error, setError] = useState("");
+  const query = q.trim().toLowerCase();
+  const list = platform.businesses.filter(
+    (b) => !query || [b.name, b.key, String(b.id), b.description].some((x) => x.toLowerCase().includes(query))
+  );
+  return (
+    <section className="card">
+      <div className="card-head">
+        <div className="row" style={{ gap: 10, flex: 1 }}>
+          <input className="input" style={{ maxWidth: 360 }} placeholder="Search businesses…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <span className="small faint">
+            {list.length} of {platform.businesses.length}
+          </span>
+        </div>
+        {isAdmin && (
+          <button className="btn btn-primary btn-sm" onClick={() => setEditing("new")}>
+            <Icon name="plus" /> New business
+          </button>
+        )}
+      </div>
+      <ErrorBox error={error} />
+      {list.length === 0 ? (
+        <Empty title={platform.businesses.length ? "Nothing matches" : "No businesses yet"}>
+          {!platform.businesses.length && <p>Add the businesses of {platform.name} — e.g. Search, Ads, Recommendation.</p>}
+        </Empty>
+      ) : (
+        <BusinessTable
+          businesses={list}
+          actions={
+            isAdmin
+              ? (b) => (
+                  <>
+                    <button className="icon-btn" aria-label="Edit" title="Edit or move to another platform" onClick={() => setEditing(b)}>
+                      <Icon name="edit" size={15} />
+                    </button>
+                    <button
+                      className="icon-btn"
+                      aria-label="Delete"
+                      disabled={b.experiments > 0}
+                      title={b.experiments > 0 ? "Businesses with experiments can't be deleted" : "Delete"}
+                      onClick={async () => {
+                        if (!confirm(`Delete ${b.name} with its measures, metrics, groups and events?`)) return;
+                        setError("");
+                        try {
+                          await api.deleteBusiness(b.id);
+                          reload();
+                        } catch (e) {
+                          setError(e instanceof Error ? e.message : String(e));
+                        }
+                      }}
+                    >
+                      <Icon name="trash" size={15} />
+                    </button>
+                  </>
+                )
+              : undefined
+          }
+        />
+      )}
+      {editing && (
+        <BusinessModal
+          platforms={all.data ?? [platform]}
+          platformId={platform.id}
+          business={editing === "new" ? undefined : editing}
+          onClose={() => setEditing(null)}
+          onSaved={(b) => {
+            setEditing(null);
+            if (editing === "new") nav(`/businesses/${b.id}`);
+            else reload();
+          }}
+        />
+      )}
+    </section>
   );
 }

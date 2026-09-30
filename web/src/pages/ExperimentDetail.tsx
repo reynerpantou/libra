@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { LineChart } from "../components/LineChart";
 import { ParamTree, UsagePanel } from "../components/ParamTree";
+import { RolloutChoice, RolloutStatus, schedule } from "../components/Rollout";
 import ReportView from "../components/ReportView";
 import { TargetingView } from "../components/Targeting";
 import { Empty, ErrorBox, Field, Icon, Loading, Modal, Popover, StatusBadge, Tabs, TrafficBar } from "../components/ui";
@@ -10,7 +11,7 @@ import { useCan } from "../lib/auth";
 import { actionLabel, fmtDate, fmtDateTime, fmtInt, statusLabel, trafficPct } from "../lib/format";
 import { diversionName, useDiversions } from "../lib/diversions";
 import { useAsync } from "../lib/hooks";
-import type { Experiment, Status } from "../lib/types";
+import type { Experiment, Gradual, Layer, Status } from "../lib/types";
 
 type Tab = "report" | "overview" | "whitelist" | "history";
 
@@ -56,19 +57,22 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
   const [pending, setPending] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [variantId, setVariantId] = useState<number>(0);
+  const [gradual, setGradual] = useState<Gradual | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const actions = e.actions ?? [];
   const primary = ["start", "submit", "approve", "resume"];
-  const needsDialog = ["reject", "approve", "launch", "stop", "archive", "pause"];
+  const needsDialog = ["reject", "approve", "launch", "stop", "archive", "pause", "start"];
 
   const run = async (action: string) => {
     setBusy(true);
     setError("");
     try {
-      onChange(await api.action(e.id, action, { note, variant_id: variantId || undefined }));
+      const g = (action === "start" || action === "launch") && gradual ? gradual : undefined;
+      onChange(await api.action(e.id, action, { note, variant_id: variantId || undefined, gradual: g }));
       setPending(null);
       setNote("");
+      setGradual(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -94,7 +98,11 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
         <div className="row small faint" style={{ marginTop: 6 }}>
           <span>{e.business_name}</span>·<span>{e.layer_auto ? `dedicated layer (by ${e.layer_diversion})` : `layer ${e.layer_name}`}</span>·<span>owner {e.owner_name || "—"}</span>·
           <span>
-            {e.status === "active" || e.status === "paused" ? `${trafficPct(e.traffic_held)} traffic` : `target ${trafficPct(e.traffic_target)}`}
+            {e.status === "active" || e.status === "paused"
+              ? `${trafficPct(e.traffic_held)} traffic`
+              : e.status === "launched"
+              ? `launched to ${trafficPct(e.launch_rollout)} of units`
+              : `target ${trafficPct(e.traffic_target)}`}
           </span>
           {e.started_at && <>·<span>started {fmtDate(e.started_at)}</span></>}
         </div>
@@ -157,6 +165,15 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
           }
         >
           {confirmText[pending] && <p className="muted">{confirmText[pending]}</p>}
+          {pending === "start" && (
+            <>
+              <p className="muted">
+                Start serving the experiment to <b>{trafficPct(e.traffic_target)}</b> of {e.layer_auto ? "its units" : `layer ${e.layer_name}`}. Go
+                there at once, or ramp up gradually and watch the metrics as it grows.
+              </p>
+              <RolloutChoice from={0} target={e.traffic_target} value={gradual} onChange={setGradual} withStart noun="Traffic" />
+            </>
+          )}
           {pending === "launch" && (
             <>
               <p className="muted">
@@ -171,6 +188,9 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
                     </option>
                   ))}
                 </select>
+              </Field>
+              <Field label="Release" hint="A gradual release serves the variant to a growing share of units; the rest keep the current defaults.">
+                <RolloutChoice from={0} target={1000} value={gradual} onChange={setGradual} withStart noun="The launch" />
               </Field>
             </>
           )}
@@ -187,32 +207,14 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
 }
 
 function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => void }) {
-  const canEdit = useCan("editor");
-  const [traffic, setTraffic] = useState(e.traffic_target);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
   const layers = useAsync(() => api.layers(), [e.updated_at]);
   const exposures = useAsync(() => api.exposures(e.id), [e.id]);
   const usage = useAsync(() => api.paramUsage(e.id), [e.id, e.updated_at]);
   const diversions = useDiversions();
   const [sel, setSel] = useState<{ path: string; anchor: HTMLElement } | null>(null);
-  useEffect(() => setTraffic(e.traffic_target), [e.traffic_target]);
   const layer = layers.data?.find((l) => l.id === e.layer_id);
   const running = e.status === "active" || e.status === "paused";
   const free = layer ? 1000 - layer.used_buckets + (running ? e.traffic_held : 0) : 1000;
-  const finished = ["stopped", "launched", "archived"].includes(e.status);
-
-  const apply = async () => {
-    setBusy(true);
-    setError("");
-    try {
-      onChange(await api.setTraffic(e.id, traffic));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const days = exposures.data ?? [];
   return (
@@ -258,69 +260,7 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
           {e.description && <p className="muted">{e.description}</p>}
         </section>
 
-        <section className="card card-pad stack">
-          <h2>Traffic</h2>
-          <div className="row-between">
-            <div>
-              <div style={{ fontSize: 26, fontWeight: 650 }}>{running ? trafficPct(e.traffic_held) : trafficPct(0)}</div>
-              <div className="faint small">
-                {running ? "of the layer's units are in this experiment" : finished ? "traffic released" : `will take ${trafficPct(e.traffic_target)} when started`}
-              </div>
-            </div>
-            {e.layer_auto ? (
-              <div className="right small faint">
-                Dedicated layer
-                <br />
-                no other experiments
-              </div>
-            ) : layer && (
-              <div className="right small faint">
-                Layer {layer.name}
-                <br />
-                {trafficPct(1000 - layer.used_buckets)} free
-              </div>
-            )}
-          </div>
-          {layer && (
-            <div className="bucketbar" title="Layer occupancy">
-              {layer.holders.map((h, i) => (
-                <div
-                  key={h.experiment_id}
-                  title={`#${h.experiment_id} ${h.name}: ${trafficPct(h.buckets)}`}
-                  style={{ width: `${h.buckets / 10}%`, background: h.experiment_id === e.id ? "var(--accent)" : `var(--series-${(i % 4) + 2})`, opacity: h.experiment_id === e.id ? 1 : 0.45 }}
-                />
-              ))}
-            </div>
-          )}
-          {canEdit && !finished && e.status !== "in_review" && (
-            <>
-              <Field label={`Target: ${trafficPct(traffic)}`} hint={`Up to ${trafficPct(free)} is available. Ramping up keeps everyone already in; ramping down removes the most recent units first.`}>
-                <input
-                  type="range"
-                  min={0}
-                  max={1000}
-                  step={5}
-                  value={traffic}
-                  onChange={(x) => setTraffic(Math.min(Number(x.target.value), free))}
-                />
-                <TrafficBar mine={traffic} free={free} />
-              </Field>
-              <div className="row">
-                {[10, 50, 100, 200, 500, 1000].map((v) => (
-                  <button key={v} className="btn btn-sm" disabled={v > free} onClick={() => setTraffic(v)}>
-                    {trafficPct(v)}
-                  </button>
-                ))}
-                <span className="spacer" />
-                <button className="btn btn-primary btn-sm" disabled={busy || traffic === e.traffic_target} onClick={apply}>
-                  Apply
-                </button>
-              </div>
-              {e.status === "approved" && <p className="small faint">Changing traffic sends an approved experiment back to draft.</p>}
-              <ErrorBox error={error} />
-            </>
-          )}
-        </section>
+        <TrafficPanel e={e} onChange={onChange} layer={layer} free={free} />
       </div>
 
       <section className="card">
@@ -400,6 +340,127 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
         )}
       </section>
     </div>
+  );
+}
+
+// TrafficPanel changes how much traffic the experiment gets (or, once
+// launched, how many units the launched variant reaches): immediately, or
+// gradually on a schedule.
+function TrafficPanel({ e, onChange, layer, free }: { e: Experiment; onChange: (e: Experiment) => void; layer?: Layer; free: number }) {
+  const canEdit = useCan("editor");
+  const launched = e.status === "launched";
+  const running = e.status === "active" || e.status === "paused";
+  const finished = ["stopped", "archived"].includes(e.status);
+  const current = launched ? e.launch_rollout : e.traffic_target;
+  const max = launched || e.layer_auto ? 1000 : free;
+  const [value, setValue] = useState(current);
+  const [gradual, setGradual] = useState<Gradual | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const plans = useAsync(() => api.rollouts(e.id), [e.id, e.updated_at]);
+  useEffect(() => setValue(current), [current]);
+  const canGradual = running || launched;
+  const g = canGradual && value > current ? gradual : null;
+  const apply = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      onChange(await api.setTraffic(e.id, value, g ?? undefined));
+      setGradual(null);
+      plans.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const steps = g ? schedule(current, value, g) : [];
+  return (
+    <section className="card card-pad stack">
+      <h2>{launched ? "Launch rollout" : "Traffic"}</h2>
+      <div className="row-between">
+        <div>
+          <div style={{ fontSize: 26, fontWeight: 650 }}>{launched ? trafficPct(e.launch_rollout) : running ? trafficPct(e.traffic_held) : trafficPct(0)}</div>
+          <div className="faint small">
+            {launched
+              ? "of targeted units get the launched variant; the rest keep the previous defaults"
+              : running
+              ? "of the layer's units are in this experiment"
+              : finished
+              ? "traffic released"
+              : `will take ${trafficPct(e.traffic_target)} when started`}
+          </div>
+        </div>
+        {!launched &&
+          (e.layer_auto ? (
+            <div className="right small faint">
+              Dedicated layer
+              <br />
+              no other experiments
+            </div>
+          ) : (
+            layer && (
+              <div className="right small faint">
+                Layer {layer.name}
+                <br />
+                {trafficPct(1000 - layer.used_buckets)} free
+              </div>
+            )
+          ))}
+      </div>
+      {!launched && layer && !e.layer_auto && (
+        <div className="bucketbar" title="Layer occupancy">
+          {layer.holders.map((h, i) => (
+            <div
+              key={h.experiment_id}
+              title={`#${h.experiment_id} ${h.name}: ${trafficPct(h.buckets)}`}
+              style={{ width: `${h.buckets / 10}%`, background: h.experiment_id === e.id ? "var(--accent)" : `var(--series-${(i % 4) + 2})`, opacity: h.experiment_id === e.id ? 1 : 0.45 }}
+            />
+          ))}
+        </div>
+      )}
+      {launched && (
+        <div className="rollout-bar">
+          <div style={{ width: `${e.launch_rollout / 10}%` }} />
+        </div>
+      )}
+      <RolloutStatus plans={plans.data ?? []} current={current} kind={launched ? "launch" : "traffic"} canEdit={canEdit} onCancelled={plans.reload} />
+      {canEdit && !finished && e.status !== "in_review" && (
+        <>
+          <Field
+            label={`${launched ? "Roll out to" : "Target"}: ${trafficPct(value)}`}
+            hint={
+              launched
+                ? "Raising it keeps everyone who already has the launched variant."
+                : `Up to ${trafficPct(max)} is available. Ramping up keeps everyone already in; ramping down removes the most recent units first.`
+            }
+          >
+            <input type="range" min={launched ? 5 : 0} max={1000} step={5} value={value} onChange={(x) => setValue(Math.max(launched ? 1 : 0, Math.min(Number(x.target.value), max)))} />
+            {!launched && <TrafficBar mine={value} free={max} />}
+          </Field>
+          <div className="row">
+            {[10, 50, 100, 200, 500, 1000].map((v) => (
+              <button key={v} className="btn btn-sm" disabled={v > max} onClick={() => setValue(v)}>
+                {trafficPct(v)}
+              </button>
+            ))}
+          </div>
+          {canGradual ? (
+            <RolloutChoice from={current} target={value} value={gradual} onChange={setGradual} noun={launched ? "The launch" : "Traffic"} />
+          ) : (
+            <p className="small faint">Gradual ramps are available once the experiment runs — or start it gradually.</p>
+          )}
+          <div className="row">
+            <span className="spacer" />
+            <button className="btn btn-primary btn-sm" disabled={busy || value === current} onClick={apply}>
+              {g ? `Ramp to ${trafficPct(value)} in ${steps.length} steps` : `Apply ${trafficPct(value)} now`}
+            </button>
+          </div>
+          {e.status === "approved" && <p className="small faint">Changing traffic sends an approved experiment back to draft.</p>}
+          <ErrorBox error={error} />
+        </>
+      )}
+    </section>
   );
 }
 
@@ -547,6 +608,8 @@ function describe(action: string): string {
     launch: "launched a variant",
     archive: "archived it",
     traffic: "changed traffic",
+    launch_rollout: "changed the launch rollout",
+    rollout_cancel: "stopped a gradual rollout",
     whitelist_add: "added test users",
     whitelist_remove: "removed a test user",
     clone: "created it as a clone",

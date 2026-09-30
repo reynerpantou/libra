@@ -189,6 +189,7 @@ type Experiment struct {
 	ReviewNote        string           `json:"review_note"`
 	ReviewerName      string           `json:"reviewer_name"`
 	LaunchedVariantID *int64           `json:"launched_variant_id"`
+	LaunchRollout     int              `json:"launch_rollout"` // per mille of units the launched variant serves
 	StartedAt         *time.Time       `json:"started_at"`
 	EndedAt           *time.Time       `json:"ended_at"`
 	LaunchedAt        *time.Time       `json:"launched_at"`
@@ -204,7 +205,7 @@ const experimentSelect = `
 	SELECT e.id, e.business_id, b.key, b.name, e.layer_id, l.name, l.diversion, l.auto, e.name, e.hypothesis, e.description,
 	       e.owner_id, COALESCE(NULLIF(o.display_name, ''), o.username, ''), e.status, e.traffic_target, cardinality(e.buckets),
 	       e.targeting, array_to_string(e.metric_group_ids, ','), e.review_note, COALESCE(NULLIF(rv.display_name, ''), rv.username, ''),
-	       e.launched_variant_id, e.started_at, e.ended_at, e.launched_at, e.created_at, e.updated_at,
+	       e.launched_variant_id, e.launch_rollout, e.started_at, e.ended_at, e.launched_at, e.created_at, e.updated_at,
 	       (SELECT count(*) FROM assignments a WHERE a.experiment_id = e.id)
 	FROM experiments e
 	JOIN businesses b ON b.id = e.business_id
@@ -219,7 +220,7 @@ func scanExperiment(sc interface{ Scan(...any) error }) (Experiment, error) {
 	err := sc.Scan(&e.ID, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.LayerAuto, &e.Name, &e.Hypothesis, &e.Description,
 		&e.OwnerID, &e.OwnerName, &e.Status, &e.TrafficTarget, &e.TrafficHeld,
 		&targeting, &groups, &e.ReviewNote, &e.ReviewerName,
-		&e.LaunchedVariantID, &e.StartedAt, &e.EndedAt, &e.LaunchedAt, &e.CreatedAt, &e.UpdatedAt, &e.Units)
+		&e.LaunchedVariantID, &e.LaunchRollout, &e.StartedAt, &e.EndedAt, &e.LaunchedAt, &e.CreatedAt, &e.UpdatedAt, &e.Units)
 	if err != nil {
 		return e, err
 	}
@@ -777,8 +778,9 @@ func (s *Server) ExperimentAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Note      string `json:"note"`
-		VariantID int64  `json:"variant_id"`
+		Note      string   `json:"note"`
+		VariantID int64    `json:"variant_id"`
+		Gradual   *Gradual `json:"gradual,omitempty"` // start / launch: ramp up instead of all at once
 	}
 	if r.ContentLength != 0 && !decodeOr400(w, r, &req) {
 		return
@@ -806,6 +808,26 @@ func (s *Server) ExperimentAction(w http.ResponseWriter, r *http.Request) {
 	if action == "reject" && req.Note == "" {
 		badRequest(w, "say why it's rejected")
 		return
+	}
+	// Gradual start ramps traffic up to the target; gradual launch ramps the
+	// share of units the launched variant serves up to everyone.
+	var planKind string
+	var planFrom, planFirst, planTarget int
+	if req.Gradual != nil {
+		switch action {
+		case "start":
+			planKind, planTarget = "traffic", e.TrafficTarget
+		case "launch":
+			planKind, planTarget = "launch", assign.Buckets
+		default:
+			badRequest(w, "only start and launch can be gradual")
+			return
+		}
+		if msg := req.Gradual.check(0, planTarget); msg != "" {
+			badRequest(w, msg)
+			return
+		}
+		planFirst = req.Gradual.first(0, planTarget)
 	}
 
 	tx, err := s.DB.BeginTx(r.Context(), nil)
@@ -862,7 +884,12 @@ func (s *Server) ExperimentAction(w http.ResponseWriter, r *http.Request) {
 			serverError(w, r, err)
 			return
 		}
-		next, err := assign.Allocate(cur, e.TrafficTarget, taken, salt)
+		want := e.TrafficTarget
+		if planKind == "traffic" {
+			want = planFirst
+			add("traffic_target = $%d", want)
+		}
+		next, err := assign.Allocate(cur, want, taken, salt)
 		if err != nil {
 			badRequest(w, err.Error()+" — lower this experiment's traffic or free the layer")
 			return
@@ -887,110 +914,30 @@ func (s *Server) ExperimentAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		add("launched_variant_id = $%d", req.VariantID)
+		rollout := assign.Buckets
+		if planKind == "launch" {
+			rollout = planFirst
+			detail["rollout"] = pct(rollout)
+		}
+		add("launch_rollout = $%d", rollout)
 		sets = append(sets, "buckets = '{}'", "launched_at = now()", "ended_at = COALESCE(ended_at, now())")
 	}
 	if _, err := tx.ExecContext(r.Context(), `UPDATE experiments SET `+strings.Join(sets, ", ")+` WHERE id = $1`, args...); err != nil {
 		serverError(w, r, err)
 		return
 	}
+	if action == "stop" || action == "archive" || action == "launch" {
+		err = cancelPlans(r.Context(), tx, id, "", "the experiment was "+to)
+	}
+	if err == nil && planKind != "" {
+		detail["gradual"] = fmt.Sprintf("+%s every %d min up to %s", pct(req.Gradual.Step), req.Gradual.IntervalMinutes, pct(planTarget))
+		err = startPlan(r.Context(), tx, id, planKind, planFrom, planFirst, planTarget, req.Gradual, user(r).ID)
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
 	if err := audit(r.Context(), tx, user(r).ID, id, "experiment", id, action, e.Status, to, detail); err != nil {
-		serverError(w, r, err)
-		return
-	}
-	if err := serving.Bump(r.Context(), tx); err != nil {
-		serverError(w, r, err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		serverError(w, r, err)
-		return
-	}
-	s.reload(r.Context())
-	out, _ := s.loadExperiment(r.Context(), id, true)
-	out.Actions = availableActions(out, user(r))
-	writeJSON(w, http.StatusOK, out)
-}
-
-// SetTraffic changes the traffic target; a running experiment re-allocates
-// its buckets immediately (ramping up keeps everyone already in).
-func (s *Server) SetTraffic(w http.ResponseWriter, r *http.Request) {
-	id, _ := pathID(r, "id")
-	var req struct {
-		TrafficTarget int `json:"traffic_target"`
-	}
-	if !decodeOr400(w, r, &req) {
-		return
-	}
-	if req.TrafficTarget < 0 || req.TrafficTarget > assign.Buckets {
-		badRequest(w, "traffic must be between 0% and 100%")
-		return
-	}
-	e, err := s.loadExperiment(r.Context(), id, false)
-	if errors.Is(err, sql.ErrNoRows) {
-		notFound(w, "experiment")
-		return
-	}
-	if err != nil {
-		serverError(w, r, err)
-		return
-	}
-	switch e.Status {
-	case assign.StatusStopped, assign.StatusLaunched, assign.StatusArchived:
-		badRequest(w, "a finished experiment's traffic can't change")
-		return
-	case assign.StatusInReview:
-		badRequest(w, "withdraw the review before changing traffic")
-		return
-	}
-	if e.Status != assign.StatusActive && e.Status != assign.StatusPaused {
-		// Not holding buckets yet; still don't plan more than the layer has.
-		free, err := s.layerFree(r.Context(), s.DB, e.LayerID, id)
-		if err != nil {
-			serverError(w, r, err)
-			return
-		}
-		if req.TrafficTarget > free {
-			badRequest(w, fmt.Sprintf("the layer only has %s free", pct(free)))
-			return
-		}
-	}
-	tx, err := s.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		serverError(w, r, err)
-		return
-	}
-	defer tx.Rollback()
-	sets := "traffic_target = $2, updated_at = now()"
-	args := []any{id, req.TrafficTarget}
-	if e.Status == assign.StatusActive || e.Status == assign.StatusPaused {
-		taken, err := takenBuckets(r.Context(), tx, e.LayerID, id)
-		if err != nil {
-			serverError(w, r, err)
-			return
-		}
-		cur, salt, err := currentBuckets(r.Context(), tx, id)
-		if err != nil {
-			serverError(w, r, err)
-			return
-		}
-		next, err := assign.Allocate(cur, req.TrafficTarget, taken, salt)
-		if err != nil {
-			badRequest(w, err.Error())
-			return
-		}
-		sets += ", buckets = $3"
-		args = append(args, next)
-	} else if e.Status == assign.StatusApproved {
-		// Traffic is part of what was reviewed.
-		sets += ", status = 'draft'"
-	}
-	if _, err := tx.ExecContext(r.Context(), `UPDATE experiments SET `+sets+` WHERE id = $1`, args...); err != nil {
-		serverError(w, r, err)
-		return
-	}
-	if err := audit(r.Context(), tx, user(r).ID, id, "experiment", id, "traffic", "", "", map[string]any{
-		"from": pct(e.TrafficTarget), "to": pct(req.TrafficTarget),
-	}); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -1111,7 +1058,7 @@ type AuditEntry struct {
 func (s *Server) ExperimentHistory(w http.ResponseWriter, r *http.Request) {
 	id, _ := pathID(r, "id")
 	rows, err := s.DB.QueryContext(r.Context(), `
-		SELECT a.id, a.entity, a.entity_id, COALESCE(NULLIF(u.display_name, ''), u.username, 'system'), a.action, a.from_status, a.to_status, a.detail, a.created_at
+		SELECT a.id, a.entity, a.entity_id, COALESCE(NULLIF(u.display_name, ''), u.username, 'Libra'), a.action, a.from_status, a.to_status, a.detail, a.created_at
 		FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id WHERE a.experiment_id = $1 ORDER BY a.id DESC LIMIT 200`, id)
 	if err != nil {
 		serverError(w, r, err)

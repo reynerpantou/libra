@@ -125,7 +125,7 @@ func TestEndToEnd(t *testing.T) {
 	for _, g := range rc.Groups {
 		names = append(names, g.Owner+"/"+g.Name)
 	}
-	if len(rc.Groups) != 4 || !rc.Groups[0].IsDefault || rc.Groups[0].Name != "Platform guardrails" {
+	if len(rc.Groups) != 4 || !rc.Groups[0].IsDefault || rc.Groups[0].Name != "Default metrics" {
 		t.Errorf("card experiment groups: %v", names)
 	}
 	cardKeys := map[string]report.MetricResult{}
