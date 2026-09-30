@@ -10,6 +10,7 @@ import Experiments from "./pages/Experiments";
 import Integrate from "./pages/Integrate";
 import Layers from "./pages/Layers";
 import Login, { SignInLink } from "./pages/Login";
+import Setup from "./pages/Setup";
 import Pipeline from "./pages/Pipeline";
 import Settings from "./pages/Settings";
 import Tools from "./pages/Tools";
@@ -26,6 +27,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/login/link" element={<SignInLink />} />
+      <Route path="/setup" element={<Setup />} />
       <Route
         element={
           <Protected>

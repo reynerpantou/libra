@@ -29,8 +29,7 @@ make setup                      # frontend deps
 make build                      # builds the SPA and ./libra
 docker compose up -d postgres   # or point LIBRA_DATABASE_URL at any Postgres
 ./libra demo                    # sample "search" business + 14 days of simulated traffic
-./libra sign-in-link admin      # open the printed link to sign in
-./libra                         # serve on :8080
+./libra                         # serve on :8080 and print the owner setup link
 ```
 
 `libra demo` creates a **Search** business with the metrics below, two traffic
@@ -41,8 +40,27 @@ figure.
 
 With Docker only: `cp .env.example .env`, set `POSTGRES_PASSWORD`, then
 `docker compose up --build`, followed by
-`docker compose exec libra /libra demo` and
-`docker compose exec libra /libra sign-in-link admin`.
+`docker compose exec libra /libra demo`. The setup link is in
+`docker compose logs libra`.
+
+### Becoming the owner
+
+There's no admin account to configure. While nobody can sign in as the
+owner, every start prints a one-time setup link to the server's log:
+
+```
+  ┌─ Libra has no owner yet ─────────────────────────────────────────
+  │ Open this link and sign in with Google or Apple to become the owner:
+  │
+  │   http://localhost:8080/setup#…
+```
+
+Open it and continue with Google or Apple; that account becomes the owner
+(admin). The link works once and expires after 24 hours; `libra setup-link`
+(`make claim`) prints a new one. Everyone else is invited from **Settings →
+People** by email. For recovery, `libra sign-in-link <username>`
+(`make link user=…`) prints a one-time sign-in link, and `libra list-users`
+(`make users`) lists accounts.
 
 ## Concepts
 
@@ -140,7 +158,6 @@ use the same hash: the first 8 bytes of SHA-256, big-endian, mod 1000, over
 | `LIBRA_PIPELINE_INTERVAL_SECONDS` | `300` | pipeline schedule (0 = on demand only) |
 | `LIBRA_COOKIE_SECURE` | `true` | HTTPS-only cookies (browsers accept them on `http://localhost`) |
 | `LIBRA_PUBLIC_URL` | `http://localhost:8080` | sign-in callbacks return here |
-| `LIBRA_ADMIN_USER` / `LIBRA_ADMIN_EMAIL` | `admin` / empty | owner created on first run |
 | `LIBRA_GOOGLE_CLIENT_ID` / `_SECRET` | empty | Sign in with Google |
 | `LIBRA_APPLE_*` | empty | Sign in with Apple |
 | `LIBRA_TRUSTED_PROXIES` | empty | reverse proxies whose `X-Forwarded-For` is trusted |
@@ -149,6 +166,8 @@ use the same hash: the first 8 bytes of SHA-256, big-endian, mod 1000, over
 
 ```
 libra                                        run the server
+libra setup-link                             new owner setup link (only while nobody can sign in as owner)
+libra list-users                             list accounts
 libra sign-in-link <username>                one-time sign-in link (15 minutes)
 libra api-key <name> <scope>[,<scope>]       create an API key (runtime, ingest)
 libra pipeline                               run the data pipeline once

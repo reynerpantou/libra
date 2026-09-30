@@ -53,7 +53,7 @@ export async function request<T>(method: string, path: string, body?: unknown): 
   }
   if (!res.ok) {
     const err = data as { code?: string; message?: string } | null;
-    if (res.status === 401 && !path.startsWith("/auth") && path !== "/me") {
+    if (res.status === 401 && !path.startsWith("/auth") && !path.startsWith("/setup") && path !== "/me") {
       window.location.assign("/login");
     }
     throw new ApiError(res.status, err?.code ?? "error", err?.message ?? `request failed (${res.status})`);
@@ -85,7 +85,8 @@ export type MeasureInput = Omit<Measure, "id" | "business_id" | "pending_backfil
 export type MetricInput = Pick<Metric, "key" | "name" | "description" | "formula" | "format" | "decimals" | "direction">;
 
 export const api = {
-  providers: () => request<{ providers: string[] }>("GET", "/auth/providers"),
+  providers: () => request<{ providers: string[]; setup_needed: boolean }>("GET", "/auth/providers"),
+  setupStart: (token: string, provider: string) => request<{ redirect: string }>("POST", "/setup/start", { token, provider }),
   redeemLink: (token: string) => request<User>("POST", "/auth/link", { token }),
   logout: () => request<void>("POST", "/logout"),
   me: () => request<User>("GET", "/me"),

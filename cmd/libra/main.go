@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if len(os.Args) == 1 {
+		reportSignIn(cfg)
+	}
 	db, err := database.Open(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
@@ -37,9 +41,6 @@ func main() {
 	if err := database.Migrate(db); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
-	if err := seedOwner(db, cfg); err != nil {
-		log.Fatalf("seed owner: %v", err)
-	}
 	if len(os.Args) > 1 {
 		if err := runCommand(db, cfg, os.Args[1], os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -47,6 +48,7 @@ func main() {
 		}
 		return
 	}
+	announceSetup(db, cfg)
 	serve(db, cfg)
 }
 
@@ -111,6 +113,7 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("GET /auth/{provider}/callback", loginRL.WrapWith(http.HandlerFunc(s.AuthCallback), limited))
 	api.Handle("POST /auth/{provider}/callback", loginRL.WrapWith(http.HandlerFunc(s.AuthCallback), limited))
 	api.Handle("POST /auth/link", loginRL.Wrap(http.HandlerFunc(s.AuthLink)))
+	api.Handle("POST /setup/start", loginRL.Wrap(http.HandlerFunc(s.SetupStart)))
 	api.Handle("POST /logout", viewer(s.Logout))
 	api.Handle("GET /me", viewer(s.Me))
 
@@ -188,37 +191,51 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	return middleware.Chain(mux, middleware.Recover, middleware.Logger, middleware.SecurityHeaders(cfg.CookieSecure))
 }
 
-// seedOwner creates the owner account on an empty database.
-func seedOwner(db *sql.DB, cfg config.Config) error {
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM users`).Scan(&n); err != nil {
-		return err
+// reportSignIn says at startup which sign-in buttons will show, and what's
+// missing when a provider is only partly configured.
+func reportSignIn(cfg config.Config) {
+	var on []string
+	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" {
+		on = append(on, "Google")
+	} else if cfg.GoogleClientID != "" || cfg.GoogleClientSecret != "" {
+		log.Printf("sign-in: Google is OFF — set both LIBRA_GOOGLE_CLIENT_ID and LIBRA_GOOGLE_CLIENT_SECRET")
 	}
-	var email any
-	if cfg.AdminEmail != "" {
-		email = cfg.AdminEmail
+	apple := []string{cfg.AppleClientID, cfg.AppleTeamID, cfg.AppleKeyID, cfg.ApplePrivateKey}
+	switch n := len(slices.DeleteFunc(slices.Clone(apple), func(v string) bool { return v == "" })); n {
+	case 4:
+		on = append(on, "Apple")
+	case 0:
+	default:
+		log.Printf("sign-in: Apple is OFF — set all of LIBRA_APPLE_CLIENT_ID, _TEAM_ID, _KEY_ID and _PRIVATE_KEY")
 	}
-	if n == 0 {
-		if _, err := db.Exec(`INSERT INTO users (username, email, role, is_owner) VALUES ($1, $2, 'admin', true)`, cfg.AdminUser, email); err != nil {
-			return err
-		}
-		log.Printf("created owner account %q", cfg.AdminUser)
-	} else if email != nil {
-		res, err := db.Exec(`UPDATE users SET email = $1 WHERE is_owner AND email IS NULL`, email)
-		if err != nil {
-			return err
-		}
-		if k, _ := res.RowsAffected(); k > 0 {
-			log.Printf("owner email set to %s from LIBRA_ADMIN_EMAIL", cfg.AdminEmail)
-		}
+	if len(on) == 0 {
+		log.Printf("sign-in: no provider configured, so no sign-in buttons will show — add LIBRA_GOOGLE_CLIENT_ID and LIBRA_GOOGLE_CLIENT_SECRET to .env")
+		return
 	}
-	// Keep reminding until the owner can actually sign in with Google/Apple.
-	var owner string
-	var ownerEmail sql.NullString
-	if err := db.QueryRow(`SELECT username, email FROM users WHERE is_owner`).Scan(&owner, &ownerEmail); err == nil && !ownerEmail.Valid {
-		log.Printf("the owner %q has no email, so nobody can sign in with Google/Apple yet: set LIBRA_ADMIN_EMAIL=<your email> in .env and restart, or run `libra sign-in-link %s` (make link)", owner, owner)
+	log.Printf("sign-in: %s (callbacks go to %s/api/auth/…/callback)", strings.Join(on, " + "), cfg.PublicURL)
+}
+
+// announceSetup prints a fresh owner setup link while nobody can sign in
+// as the owner (a new install). There's nothing to configure: open the link,
+// sign in with Google or Apple, and that account is the owner.
+func announceSetup(db *sql.DB, cfg config.Config) {
+	link, err := handlers.NewSetupLink(context.Background(), db, cfg.PublicURL)
+	if err != nil {
+		log.Printf("owner setup: %v", err)
+		return
 	}
-	return nil
+	if link == "" {
+		return
+	}
+	log.Printf(`
+  ┌─ Libra has no owner yet ───────────────────────────────────────────
+  │ Open this link and sign in with Google or Apple to become the owner:
+  │
+  │   %s
+  │
+  │ It works once and expires in 24 hours. A new one is printed on every
+  │ start until someone claims it (or run: libra setup-link).
+  └────────────────────────────────────────────────────────────────────`, link)
 }
 
 func purgeSessions(ctx context.Context, db *sql.DB) {
@@ -241,6 +258,8 @@ func purgeSessions(ctx context.Context, db *sql.DB) {
 
 const usage = `usage:
   libra                                        run the server
+  libra setup-link                             print a new owner setup link (only while nobody can sign in as owner)
+  libra list-users                             list accounts (username, email, role)
   libra sign-in-link <username>                print a one-time sign-in link (valid 15 minutes)
   libra api-key <name> <scope>[,<scope>]       create an API key (scopes: runtime, ingest)
   libra pipeline                               run the data pipeline once
@@ -251,6 +270,30 @@ const usage = `usage:
 func runCommand(db *sql.DB, cfg config.Config, cmd string, args []string) error {
 	ctx := context.Background()
 	switch cmd {
+	case "setup-link":
+		link, err := handlers.NewSetupLink(ctx, db, cfg.PublicURL)
+		if err != nil {
+			return err
+		}
+		if link == "" {
+			return errors.New("Libra already has an owner who can sign in; use sign-in-link for recovery")
+		}
+		fmt.Printf("Owner setup link (valid 24 hours, replaces any earlier one):\n\n  %s\n\n", link)
+	case "list-users":
+		rows, err := db.Query(`SELECT username, COALESCE(email, '—'), CASE WHEN is_owner THEN 'owner' ELSE role END
+		                       FROM users ORDER BY is_owner DESC, role, lower(username)`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var u, e, role string
+			if err := rows.Scan(&u, &e, &role); err != nil {
+				return err
+			}
+			fmt.Printf("%-24s %-36s %s\n", u, e, role)
+		}
+		return rows.Err()
 	case "sign-in-link":
 		if len(args) != 1 {
 			return errors.New(usage)
