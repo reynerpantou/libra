@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Combobox } from "../components/Combobox";
 import { Pager, usePaged } from "../components/Pager";
 import { copyText } from "../lib/exportTable";
 import { ErrorBox, Field, Icon, Loading, StatusBadge, Tabs } from "../components/ui";
-import { api } from "../lib/api";
+import { api, BASE, type ResolveBody } from "../lib/api";
+import { JsonView } from "../components/JsonView";
 import { useDiversions } from "../lib/diversions";
 import { useAsync, useDebounced } from "../lib/hooks";
 import type { Hit, Step } from "../lib/types";
@@ -50,18 +51,26 @@ function Diagnose() {
   // Only the ids you add: pick a diversion, type its value.
   const [rows, setRows] = useState<{ key: string; value: string }[]>([{ key: "user_id", value: "" }]);
   const ids = Object.fromEntries(rows.filter((r) => r.key && r.value.trim()).map((r) => [r.key, r.value.trim()]));
-  const [platform, setPlatform] = useState("");
-  const [business, setBusiness] = useState("");
+  // Empty means "all", like the runtime API.
+  const [platformSel, setPlatformSel] = useState<string[]>([]);
+  const [businessSel, setBusinessSel] = useState<string[]>([]);
   const [attrs, setAttrs] = useState('{\n  "region": "ID",\n  "os": "android"\n}');
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<{ version: number; hits: Hit[]; params: Record<string, unknown>; trace: Step[] } | null>(null);
+  const [sent, setSent] = useState<{ body: ResolveBody; response: Record<string, unknown> } | null>(null);
   const platforms = useAsync(() => api.platforms(), []);
-  const plat = platforms.data?.find((p) => p.key === platform);
-  // With one platform there's nothing to choose.
-  useEffect(() => {
-    if (!platform && platforms.data?.length === 1) setPlatform(platforms.data[0].key);
-  }, [platforms.data, platform]);
+  const chosenPlatforms = (platforms.data ?? []).filter((p) => platformSel.length === 0 || platformSel.includes(p.key));
+  // A business key is qualified with its platform when several platforms
+  // are in play, so equal keys on different platforms stay distinct.
+  const qualify = platformSel.length !== 1;
+  const businessOptions = chosenPlatforms.flatMap((p) =>
+    p.businesses.map((b) => ({
+      value: qualify ? `${p.key}/${b.key}` : b.key,
+      label: qualify ? `${p.name} › ${b.name}` : b.name,
+      hint: qualify ? `${p.key}/${b.key}` : b.key,
+    }))
+  );
   const run = async () => {
     setError("");
     let parsed: Record<string, unknown> = {};
@@ -73,8 +82,10 @@ function Diagnose() {
     }
     setBusy(true);
     try {
-      const r = await api.diagnose(ids, platform, business, parsed);
+      const body = resolveBody(ids, platformSel, businessSel, parsed);
+      const r = await api.diagnose(body);
       setRes({ version: r.snapshot_version, ...r.result, trace: r.result.trace ?? [] });
+      setSent({ body, response: r.response });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -127,38 +138,24 @@ function Diagnose() {
           </div>
           <div className="small faint">Each layer splits by one diversion; experiments whose id you don't send are skipped (the trace says so).</div>
         </div>
-        <div className="grid-2">
-          <Field label="Platform" hint="What the service sends as platform.">
-            <select
-              className="input"
-              value={platform}
-              onChange={(e) => {
-                setPlatform(e.target.value);
-                setBusiness("");
-              }}
-            >
-              <option value="">All (debug only)</option>
-              {platforms.data?.map((p) => (
-                <option key={p.id} value={p.key}>
-                  {p.name} ({p.key})
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Business" hint="Optional: only its experiments.">
-            <select className="input" value={business} onChange={(e) => setBusiness(e.target.value)} disabled={!plat}>
-              <option value="">All of the platform</option>
-              {plat?.businesses.map((b) => (
-                <option key={b.id} value={b.key}>
-                  {b.name} ({b.key})
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
-        {!platform && (platforms.data?.length ?? 0) > 1 && (
-          <div className="small faint">The runtime API needs a platform when there are several; here "All" shows every platform's experiments for debugging.</div>
-        )}
+        <Field group label="Platforms" hint={'None picked = "all". Several are sent comma-separated, e.g. "tokopedia,tiktokshop".'}>
+          <MultiPick
+            options={(platforms.data ?? []).map((p) => ({ value: p.key, label: p.name, hint: p.key }))}
+            value={platformSel}
+            onChange={(v) => {
+              setPlatformSel(v);
+              setBusinessSel([]);
+            }}
+            placeholder="All platforms"
+          />
+        </Field>
+        <Field
+          group
+          label="Businesses"
+          hint={qualify ? 'None picked = "all". With several platforms, businesses are sent as "platform/business" so equal keys never collide.' : 'None picked = "all" of the platform.'}
+        >
+          <MultiPick options={businessOptions} value={businessSel} onChange={setBusinessSel} placeholder="All businesses" />
+        </Field>
         <Field label="Request attributes (JSON)" hint="Targeting rules are checked against these.">
           <textarea className="input input-mono" rows={6} value={attrs} onChange={(e) => setAttrs(e.target.value)} />
         </Field>
@@ -173,6 +170,19 @@ function Diagnose() {
       <div className="stack">
         {busy && <Loading />}
         {res && <DiagnoseResult res={res} />}
+        {sent && (
+          <>
+            <JsonView
+              title="Request to Libra · POST /api/v1/resolve"
+              value={sent.body}
+              extra={{
+                label: "curl",
+                text: `curl -X POST ${window.location.origin}${BASE}/api/v1/resolve \\\n  -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(sent.body)}'`,
+              }}
+            />
+            <JsonView title="Response from Libra" value={sent.response} />
+          </>
+        )}
       </div>
     </div>
   );
@@ -316,5 +326,56 @@ function Params() {
         </tbody>
       </table>
     </section>
+  );
+}
+
+// resolveBody builds what a service sends to /api/v1/resolve. Empty
+// selections are sent as "all".
+function resolveBody(ids: Record<string, string>, platforms: string[], businesses: string[], attrs: Record<string, unknown>): ResolveBody {
+  const other = Object.fromEntries(Object.entries(ids).filter(([k, v]) => k !== "user_id" && k !== "device_id" && v));
+  return {
+    ...(ids.user_id ? { user_id: ids.user_id } : {}),
+    ...(ids.device_id ? { device_id: ids.device_id } : {}),
+    ...(Object.keys(other).length ? { ids: other } : {}),
+    platform: platforms.join(",") || "all",
+    business: businesses.join(",") || "all",
+    ...(Object.keys(attrs).length ? { attrs } : {}),
+  };
+}
+
+// MultiPick: chips for what's picked plus a searchable dropdown to add more.
+function MultiPick({
+  options,
+  value,
+  onChange,
+  placeholder,
+}: {
+  options: { value: string; label: string; hint?: string }[];
+  value: string[];
+  onChange: (v: string[]) => void;
+  placeholder: string;
+}) {
+  const label = (v: string) => options.find((o) => o.value === v)?.label ?? v;
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      {value.length > 0 && (
+        <div className="chip-row">
+          {value.map((v) => (
+            <span key={v} className="chip" title={v}>
+              {label(v)}
+              <button type="button" className="chip-x" aria-label={`Remove ${label(v)}`} onClick={() => onChange(value.filter((x) => x !== v))}>
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <Combobox
+        options={options.filter((o) => !value.includes(o.value))}
+        value=""
+        onChange={(v) => v && onChange([...value, v])}
+        placeholder={value.length ? "Add another…" : placeholder}
+      />
+    </div>
   );
 }

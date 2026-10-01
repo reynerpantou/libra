@@ -273,6 +273,9 @@ export interface Experiment {
   business_id: number;
   business_key: string;
   business_name: string;
+  business_ids: number[]; // every business it runs in, primary first
+  business_keys: string[];
+  business_names: string[];
   platform_id: number;
   platform_key: string;
   platform_name: string;

@@ -317,22 +317,43 @@ func TestPlatformScope(t *testing.T) {
 
 	for _, c := range []struct {
 		platform, business string
-		wantP, wantErr     string
+		wantP, wantB       string // joined with ","
+		wantErr            string
 	}{
-		{"tiktok", "", "tiktok", ""},
-		{"tiktok", "search", "tiktok", ""},
-		{"", "ads", "tiktok", ""}, // only one platform has it
-		{"", "search", "", "several platforms"},
-		{"", "", "", "send platform"},
-		{"nope", "", "", "unknown platform"},
-		{"toko", "ads", "", "has no business"},
+		{"tiktok", "", "tiktok", "", ""},
+		{"tiktok", "search", "tiktok", "tiktok/search", ""},
+		{"", "ads", "", "tiktok/ads", ""},                   // one platform has it
+		{"", "search", "", "tiktok/search,toko/search", ""}, // both have it: each stays tied to its platform
+		{"", "", "", "", ""},                                // everything
+		{"all", "all", "", "", ""},                          // the same, spelled out
+		{"tiktok,toko", "all", "tiktok,toko", "", ""},       // several platforms
+		{"all", "toko/search", "", "toko/search", ""},       // qualified business
+		{"tiktok", "toko/search", "", "", "isn't selected"}, // qualified on another platform
+		{"nope", "", "", "", "unknown platform"},
+		{"toko", "ads", "", "", "no selected platform"},
+		{"", "nope", "", "", "unknown business"},
 	} {
-		p, _, msg := s.Scope(c.platform, c.business)
-		if p != c.wantP || (c.wantErr == "") != (msg == "") || !strings.Contains(msg, c.wantErr) {
-			t.Errorf("Scope(%q, %q) = %q, %q", c.platform, c.business, p, msg)
+		p, b, msg := s.Scope(c.platform, c.business)
+		if c.wantErr != "" {
+			if !strings.Contains(msg, c.wantErr) {
+				t.Errorf("Scope(%q, %q): want error %q, got %q", c.platform, c.business, c.wantErr, msg)
+			}
+			continue
+		}
+		if msg != "" || strings.Join(p, ",") != c.wantP || strings.Join(b, ",") != c.wantB {
+			t.Errorf("Scope(%q, %q) = %v, %v, %q", c.platform, c.business, p, b, msg)
 		}
 	}
-	r := s.Resolve(Request{UserID: "u", Platform: "toko", Business: "search"}, false)
+	// "search" on both platforms: a toko-only request never gets tiktok's.
+	r := s.Resolve(Request{UserID: "u", Platforms: []string{"toko"}, Businesses: []string{"toko/search"}}, false)
+	if len(r.Hits) != 1 || r.Hits[0].ExperimentID != 2 {
+		t.Errorf("toko/search: %+v", r.Hits)
+	}
+	r = s.Resolve(Request{UserID: "u", Businesses: []string{"tiktok/search", "toko/search"}}, false)
+	if len(r.Hits) != 2 {
+		t.Errorf("both searches: %+v", r.Hits)
+	}
+	r = s.Resolve(Request{UserID: "u", Platform: "toko", Business: "search"}, false)
 	if len(r.Hits) != 1 || r.Hits[0].ExperimentID != 2 {
 		t.Errorf("platform filter: %+v", r.Hits)
 	}

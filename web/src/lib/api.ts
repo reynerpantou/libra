@@ -88,8 +88,18 @@ const qs = (p: Record<string, string | number | undefined | null>) => {
 // The API prefix of a definitions scope.
 export const scopePath = (s: Scope) => (s.kind === "platform" ? `/platforms/${s.id}` : `/businesses/${s.id}`);
 
+export type ResolveBody = {
+  user_id?: string;
+  device_id?: string;
+  ids?: Record<string, string>;
+  platform: string;
+  business: string;
+  attrs?: Record<string, unknown>;
+};
+
 export interface ExperimentInput {
   business_id: number;
+  business_ids: number[];
   layer_id: number;
   name: string;
   hypothesis: string;
@@ -229,19 +239,13 @@ export const api = {
       "/parameters/launched"
     ),
 
-  diagnose: (ids: Record<string, string>, platform: string, business: string, attrs: Record<string, unknown>) =>
-    request<{ snapshot_version: number; result: { hits: Hit[]; params: Record<string, unknown>; trace: Step[]; conflicts?: unknown[] } }>(
-      "POST",
-      "/tools/diagnose",
-      {
-        user_id: ids.user_id ?? "",
-        device_id: ids.device_id ?? "",
-        ids: Object.fromEntries(Object.entries(ids).filter(([k, v]) => k !== "user_id" && k !== "device_id" && v)),
-        platform,
-        business,
-        attrs,
-      }
-    ),
+  // diagnose takes the exact body a service would POST to /api/v1/resolve.
+  diagnose: (body: ResolveBody) =>
+    request<{
+      snapshot_version: number;
+      response: Record<string, unknown>;
+      result: { hits: Hit[]; params: Record<string, unknown>; trace: Step[]; conflicts?: unknown[] };
+    }>("POST", "/tools/diagnose", body),
   paramSearch: (q: string) =>
     request<{ experiment_id: number; experiment: string; platform: string; business: string; status: string; variant: string; path: string }[]>(
       "GET",

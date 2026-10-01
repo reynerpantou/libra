@@ -97,7 +97,9 @@ func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, err
 	exps := map[int64]*assign.Experiment{}
 	var list []*assign.Experiment
 	rows, err = db.QueryContext(ctx, `
-		SELECT e.id, b.key, p.key, e.layer_id, e.name, e.status, e.salt, array_to_string(e.buckets, ','), e.targeting,
+		SELECT e.id, b.key,
+		       COALESCE((SELECT string_agg(bb.key, ',' ORDER BY array_position(e.business_ids, bb.id)) FROM businesses bb WHERE bb.id = ANY(e.business_ids)), b.key),
+		       p.key, e.layer_id, e.name, e.status, e.salt, array_to_string(e.buckets, ','), e.targeting,
 		       COALESCE(e.launched_variant_id, 0), COALESCE(extract(epoch FROM e.launched_at)::bigint, 0),
 		       COALESCE(extract(epoch FROM e.started_at)::bigint, 0), e.launch_rollout
 		FROM experiments e JOIN businesses b ON b.id = e.business_id JOIN platforms p ON p.id = b.platform_id
@@ -109,10 +111,12 @@ func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, err
 		e := &assign.Experiment{Whitelist: map[string]int64{}}
 		var buckets string
 		var targeting []byte
-		if err := rows.Scan(&e.ID, &e.BusinessKey, &e.PlatformKey, &e.LayerID, &e.Name, &e.Status, &e.Salt, &buckets, &targeting, &e.LaunchedVar, &e.LaunchOrder, &e.StartOrder, &e.LaunchRollout); err != nil {
+		var bkeys string
+		if err := rows.Scan(&e.ID, &e.BusinessKey, &bkeys, &e.PlatformKey, &e.LayerID, &e.Name, &e.Status, &e.Salt, &buckets, &targeting, &e.LaunchedVar, &e.LaunchOrder, &e.StartOrder, &e.LaunchRollout); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		e.BusinessKeys = strings.Split(bkeys, ",")
 		if buckets != "" {
 			for _, b := range strings.Split(buckets, ",") {
 				var n int

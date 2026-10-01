@@ -174,6 +174,18 @@ func (s *Server) UpdateBusiness(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if newKey != oldKey {
+		// An experiment spanning this and other businesses would end up
+		// on two platforms.
+		var shared int
+		if err := tx.QueryRowContext(r.Context(), `
+			SELECT count(*) FROM experiments WHERE $1 = ANY(business_ids) AND cardinality(business_ids) > 1 AND status <> 'archived'`, id).Scan(&shared); err != nil {
+			serverError(w, r, err)
+			return
+		}
+		if shared > 0 {
+			badRequest(w, fmt.Sprintf("%d experiment(s) run in this and other businesses of its platform; it can't move to another platform", shared))
+			return
+		}
 		if err := rewrapParams(r.Context(), tx, `b.id = $3`, oldKey, newKey, id); err != nil {
 			serverError(w, r, err)
 			return
@@ -205,8 +217,8 @@ func (s *Server) DeleteCheck(w http.ResponseWriter, r *http.Request) {
 		OtherExperimentsUse int `json:"other_experiments_use"` // experiments of other businesses reporting its groups
 	}
 	err := s.DB.QueryRowContext(r.Context(), `
-		SELECT (SELECT count(*) FROM experiments WHERE business_id = $1),
-		       (SELECT count(*) FROM experiments WHERE business_id = $1 AND status IN ('active', 'paused')),
+		SELECT (SELECT count(*) FROM experiments WHERE business_id = $1 OR $1 = ANY(business_ids)),
+		       (SELECT count(*) FROM experiments WHERE (business_id = $1 OR $1 = ANY(business_ids)) AND status IN ('active', 'paused')),
 		       (SELECT count(*) FROM measures WHERE business_id = $1),
 		       (SELECT count(*) FROM metrics WHERE business_id = $1),
 		       (SELECT count(*) FROM metric_groups WHERE business_id = $1),
@@ -226,7 +238,7 @@ func (s *Server) DeleteCheck(w http.ResponseWriter, r *http.Request) {
 func (s *Server) DeleteBusiness(w http.ResponseWriter, r *http.Request) {
 	id, _ := pathID(r, "id")
 	var n int
-	if err := s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM experiments WHERE business_id = $1`, id).Scan(&n); err != nil {
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM experiments WHERE business_id = $1 OR $1 = ANY(business_ids)`, id).Scan(&n); err != nil {
 		serverError(w, r, err)
 		return
 	}

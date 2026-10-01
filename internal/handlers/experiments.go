@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -171,6 +172,9 @@ type Experiment struct {
 	ID                int64            `json:"id"`
 	BusinessID        int64            `json:"business_id"`
 	BusinessKey       string           `json:"business_key"`
+	BusinessIDs       []int64          `json:"business_ids"`   // every business it runs in, primary first
+	BusinessKeys      []string         `json:"business_keys"`  // same order
+	BusinessNames     []string         `json:"business_names"` // same order
 	PlatformID        int64            `json:"platform_id"`
 	PlatformKey       string           `json:"platform_key"`
 	PlatformName      string           `json:"platform_name"`
@@ -206,7 +210,9 @@ type Experiment struct {
 }
 
 const experimentSelect = `
-	SELECT e.id, e.business_id, b.key, b.name, p.id, p.key, p.name, e.layer_id, l.name, l.diversion, l.auto, e.name, e.hypothesis, e.description,
+	SELECT e.id, e.business_id, b.key, b.name, array_to_string(e.business_ids, ','),
+	       COALESCE((SELECT string_agg(bb.key || chr(31) || bb.name, chr(30) ORDER BY array_position(e.business_ids, bb.id)) FROM businesses bb WHERE bb.id = ANY(e.business_ids)), ''),
+	       p.id, p.key, p.name, e.layer_id, l.name, l.diversion, l.auto, e.name, e.hypothesis, e.description,
 	       e.owner_id, COALESCE(NULLIF(o.display_name, ''), o.username, ''), e.status, e.traffic_target, cardinality(e.buckets),
 	       e.targeting, array_to_string(e.metric_group_ids, ','), e.review_note, COALESCE(NULLIF(rv.display_name, ''), rv.username, ''),
 	       e.launched_variant_id, e.launch_rollout, e.started_at, e.ended_at, e.launched_at, e.created_at, e.updated_at,
@@ -222,7 +228,8 @@ func scanExperiment(sc interface{ Scan(...any) error }) (Experiment, error) {
 	var e Experiment
 	var targeting []byte
 	var groups string
-	err := sc.Scan(&e.ID, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &e.PlatformID, &e.PlatformKey, &e.PlatformName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.LayerAuto, &e.Name, &e.Hypothesis, &e.Description,
+	var bids, bnames string
+	err := sc.Scan(&e.ID, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &bids, &bnames, &e.PlatformID, &e.PlatformKey, &e.PlatformName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.LayerAuto, &e.Name, &e.Hypothesis, &e.Description,
 		&e.OwnerID, &e.OwnerName, &e.Status, &e.TrafficTarget, &e.TrafficHeld,
 		&targeting, &groups, &e.ReviewNote, &e.ReviewerName,
 		&e.LaunchedVariantID, &e.LaunchRollout, &e.StartedAt, &e.EndedAt, &e.LaunchedAt, &e.CreatedAt, &e.UpdatedAt, &e.Units)
@@ -231,6 +238,16 @@ func scanExperiment(sc interface{ Scan(...any) error }) (Experiment, error) {
 	}
 	_ = json.Unmarshal(targeting, &e.Targeting)
 	e.MetricGroupIDs = parseIDs(groups)
+	e.BusinessIDs, e.BusinessKeys, e.BusinessNames = parseIDs(bids), []string{}, []string{}
+	if bnames != "" {
+		for _, kn := range strings.Split(bnames, "\x1e") {
+			k, n, _ := strings.Cut(kn, "\x1f")
+			e.BusinessKeys, e.BusinessNames = append(e.BusinessKeys, k), append(e.BusinessNames, n)
+		}
+	}
+	if len(e.BusinessIDs) == 0 {
+		e.BusinessIDs, e.BusinessKeys, e.BusinessNames = []int64{e.BusinessID}, []string{e.BusinessKey}, []string{e.BusinessName}
+	}
 	return e, nil
 }
 
@@ -245,7 +262,7 @@ func (s *Server) ListExperiments(w http.ResponseWriter, r *http.Request) {
 	}
 	if b := q.Get("business"); b != "" {
 		args = append(args, b)
-		where = append(where, fmt.Sprintf("(b.key = $%d OR b.id::text = $%d)", len(args), len(args)))
+		where = append(where, fmt.Sprintf("EXISTS (SELECT 1 FROM businesses fb WHERE fb.id = ANY(e.business_ids || e.business_id) AND (fb.key = $%d OR fb.id::text = $%d))", len(args), len(args)))
 	}
 	if st := q.Get("status"); st != "" {
 		args = append(args, strings.Split(st, ","))
@@ -371,7 +388,8 @@ func (s *Server) GetExperiment(w http.ResponseWriter, r *http.Request) {
 }
 
 type experimentRequest struct {
-	BusinessID     int64            `json:"business_id"`
+	BusinessID     int64            `json:"business_id"`  // primary business (its metrics lead the report)
+	BusinessIDs    []int64          `json:"business_ids"` // every business it runs in; the primary is put first
 	LayerID        int64            `json:"layer_id"`
 	Name           string           `json:"name"`
 	Hypothesis     string           `json:"hypothesis"`
@@ -396,6 +414,20 @@ func (req *experimentRequest) validate() string {
 	req.Name = name
 	req.Hypothesis = strings.TrimSpace(req.Hypothesis)
 	req.Description = strings.TrimSpace(req.Description)
+	// business_ids alone is enough: its first is the primary.
+	if req.BusinessID == 0 && len(req.BusinessIDs) > 0 {
+		req.BusinessID = req.BusinessIDs[0]
+	}
+	ids := []int64{req.BusinessID}
+	for _, id := range req.BusinessIDs {
+		if id != req.BusinessID && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	req.BusinessIDs = ids
+	if len(ids) > 50 {
+		return "at most 50 businesses"
+	}
 	if req.BusinessID == 0 || (req.LayerID == 0 && req.AutoDiversion == "") {
 		return "choose a business and a layer (or Auto)"
 	}
@@ -482,9 +514,9 @@ func (s *Server) CreateExperiment(w http.ResponseWriter, r *http.Request) {
 	targeting, _ := json.Marshal(req.Targeting)
 	var id int64
 	if err := tx.QueryRowContext(r.Context(), `
-		INSERT INTO experiments (business_id, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_ids)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
-		req.BusinessID, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, salt[:16], req.TrafficTarget, targeting, req.MetricGroupIDs,
+		INSERT INTO experiments (business_id, business_ids, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_ids)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+		req.BusinessID, req.BusinessIDs, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, salt[:16], req.TrafficTarget, targeting, req.MetricGroupIDs,
 	).Scan(&id); err != nil {
 		serverError(w, r, err)
 		return
@@ -519,8 +551,12 @@ func (s *Server) CreateExperiment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) checkRefs(ctx context.Context, req *experimentRequest, self int64) string {
 	var n int
-	if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM businesses WHERE id = $1`, req.BusinessID).Scan(&n); n == 0 {
-		return "that business doesn't exist"
+	var platforms int
+	if s.DB.QueryRowContext(ctx, `SELECT count(*), count(DISTINCT platform_id) FROM businesses WHERE id = ANY($1::bigint[])`, req.BusinessIDs).Scan(&n, &platforms); n != len(req.BusinessIDs) {
+		return "every business must exist"
+	}
+	if platforms > 1 {
+		return "an experiment's businesses must belong to one platform (its parameters live under that platform's key)"
 	}
 	if req.AutoDiversion != "" {
 		if s.DB.QueryRowContext(ctx, `SELECT count(*) FROM diversions WHERE key = $1`, req.AutoDiversion).Scan(&n); n == 0 {
@@ -639,6 +675,7 @@ func (s *Server) UpdateExperiment(w http.ResponseWriter, r *http.Request) {
 	if locked {
 		// Keep what can't change; validate the rest.
 		req.BusinessID, req.LayerID, req.Variants, req.TrafficTarget = cur.BusinessID, cur.LayerID, cur.Variants, cur.TrafficTarget
+		req.BusinessIDs = cur.BusinessIDs
 		req.AutoDiversion = ""
 	}
 	if msg := req.validate(); msg != "" {
@@ -685,9 +722,9 @@ func (s *Server) UpdateExperiment(w http.ResponseWriter, r *http.Request) {
 	targeting, _ := json.Marshal(req.Targeting)
 	if _, err := tx.ExecContext(r.Context(), `
 		UPDATE experiments SET business_id = $2, layer_id = $3, name = $4, hypothesis = $5, description = $6, owner_id = $7,
-			traffic_target = $8, targeting = $9, metric_group_ids = $10, status = $11, updated_at = now()
+			traffic_target = $8, targeting = $9, metric_group_ids = $10, status = $11, business_ids = $12, updated_at = now()
 		WHERE id = $1`,
-		id, req.BusinessID, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, req.TrafficTarget, targeting, req.MetricGroupIDs, next,
+		id, req.BusinessID, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, req.TrafficTarget, targeting, req.MetricGroupIDs, next, req.BusinessIDs,
 	); err != nil {
 		serverError(w, r, err)
 		return
@@ -1220,9 +1257,9 @@ func (s *Server) CloneExperiment(w http.ResponseWriter, r *http.Request) {
 		name = string([]rune(name)[:120])
 	}
 	if err := tx.QueryRowContext(r.Context(), `
-		INSERT INTO experiments (business_id, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_ids)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
-		e.BusinessID, layerID, name, e.Hypothesis, e.Description, user(r).ID, salt[:16], e.TrafficTarget, targeting, e.MetricGroupIDs,
+		INSERT INTO experiments (business_id, business_ids, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_ids)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+		e.BusinessID, e.BusinessIDs, layerID, name, e.Hypothesis, e.Description, user(r).ID, salt[:16], e.TrafficTarget, targeting, e.MetricGroupIDs,
 	).Scan(&newID); err != nil {
 		serverError(w, r, err)
 		return

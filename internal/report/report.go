@@ -114,12 +114,13 @@ type Group struct {
 const MaxSegments = 12
 
 type experimentInfo struct {
-	businessID int64
-	groupIDs   []int64
-	startedAt  sql.NullTime
-	endedAt    sql.NullTime
-	createdAt  time.Time
-	variants   []Variant
+	businessID  int64
+	businessIDs []int64 // every business it runs in (defaults of each apply)
+	groupIDs    []int64
+	startedAt   sql.NullTime
+	endedAt     sql.NullTime
+	createdAt   time.Time
+	variants    []Variant
 }
 
 var ErrNotFound = errors.New("experiment not found")
@@ -127,9 +128,14 @@ var ErrNotFound = errors.New("experiment not found")
 func loadExperiment(ctx context.Context, db *sql.DB, id int64) (*experimentInfo, error) {
 	e := &experimentInfo{}
 	var groups string
-	err := db.QueryRowContext(ctx, `SELECT business_id, array_to_string(metric_group_ids, ','), started_at, ended_at, created_at FROM experiments WHERE id = $1`, id).
-		Scan(&e.businessID, &groups, &e.startedAt, &e.endedAt, &e.createdAt)
+	var bids string
+	err := db.QueryRowContext(ctx, `SELECT business_id, array_to_string(business_ids, ','), array_to_string(metric_group_ids, ','), started_at, ended_at, created_at FROM experiments WHERE id = $1`, id).
+		Scan(&e.businessID, &bids, &groups, &e.startedAt, &e.endedAt, &e.createdAt)
 	e.groupIDs = parseIDs(groups)
+	e.businessIDs = parseIDs(bids)
+	if len(e.businessIDs) == 0 {
+		e.businessIDs = []int64{e.businessID}
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -211,11 +217,11 @@ func (c *catalog) defs(sc Scope) (*Definitions, error) {
 
 // DefaultGroupIDs are the groups every experiment of a business shows: the
 // default groups of its platform and of the business itself.
-func DefaultGroupIDs(ctx context.Context, db *sql.DB, businessID int64) ([]int64, error) {
+func DefaultGroupIDs(ctx context.Context, db *sql.DB, businessIDs []int64) ([]int64, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT g.id FROM metric_groups g
-		WHERE g.is_default AND (g.business_id = $1 OR g.platform_id = (SELECT platform_id FROM businesses WHERE id = $1))
-		ORDER BY g.platform_id NULLS LAST, g.id`, businessID)
+		WHERE g.is_default AND (g.business_id = ANY($1::bigint[]) OR g.platform_id IN (SELECT platform_id FROM businesses WHERE id = ANY($1::bigint[])))
+		ORDER BY g.platform_id NULLS LAST, array_position($1::bigint[], g.business_id), g.id`, businessIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +294,7 @@ func selectMetrics(ctx context.Context, db *sql.DB, e *experimentInfo, o Options
 	default:
 		ids := o.GroupIDs
 		if len(ids) == 0 {
-			defaults, err := DefaultGroupIDs(ctx, db, e.businessID)
+			defaults, err := DefaultGroupIDs(ctx, db, e.businessIDs)
 			if err != nil {
 				return nil, nil, err
 			}
