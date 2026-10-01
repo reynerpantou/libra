@@ -1,13 +1,13 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Empty, ErrorBox, Field, Icon, Loading, Modal, StatusBadge, seriesColor } from "../components/ui";
 import { Pager, usePaged } from "../components/Pager";
 import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { trafficPct } from "../lib/format";
 import { useAsync } from "../lib/hooks";
-import { diversionName, reloadDiversions, useDiversions } from "../lib/diversions";
-import type { Diversion, DiversionDef } from "../lib/types";
+import { diversionName, useDiversions } from "../lib/diversions";
+import type { Diversion } from "../lib/types";
 
 export default function Layers() {
   const layers = useAsync(() => api.layers(), []);
@@ -19,7 +19,8 @@ export default function Layers() {
   const [error, setError] = useState("");
   const diversions = useDiversions();
   const [q, setQ] = useState("");
-  const [div, setDiv] = useState("");
+  const [params] = useSearchParams();
+  const [div, setDiv] = useState(params.get("diversion") ?? "");
   const query = q.trim().toLowerCase();
   const found = (layers.data ?? []).filter(
     (l) =>
@@ -34,7 +35,8 @@ export default function Layers() {
           <h1>Traffic layers</h1>
           <p>
             Each layer splits units into 1,000 buckets. Experiments in the same layer get separate buckets, so they never share a unit — use one layer
-            per area that could interfere (ranking, UI, pricing). Experiments in different layers overlap independently.
+            per area that could interfere (ranking, UI, pricing). Experiments in different layers overlap independently. Each layer splits by one{" "}
+            <Link to="/diversions">diversion</Link> (user id, device id, …).
           </p>
         </div>
         {isAdmin && (
@@ -43,7 +45,6 @@ export default function Layers() {
           </button>
         )}
       </div>
-      <Diversions />
       <ErrorBox error={layers.error} />
       {(layers.data?.length ?? 0) > 0 && (
         <div className="card card-pad row" style={{ gap: 10 }}>
@@ -155,142 +156,5 @@ export default function Layers() {
         </Modal>
       )}
     </div>
-  );
-}
-
-// Diversions: the ids traffic can be split by. user_id and device_id are
-// built in; others (e.g. shop_id, session_id) are sent in the "ids" object.
-function Diversions() {
-  const isAdmin = useCan("admin");
-  const list = useDiversions();
-  const [editing, setEditing] = useState<DiversionDef | "new" | null>(null);
-  const [error, setError] = useState("");
-  const [q, setQ] = useState("");
-  const query = q.trim().toLowerCase();
-  const found = list.filter((d) => !query || [d.key, d.name, d.description].some((x) => x.toLowerCase().includes(query)));
-  const paged = usePaged(found, 10, query);
-  return (
-    <section className="card" style={{ marginBottom: 16 }}>
-      <div className="card-head">
-        <div>
-          <h2>Diversions</h2>
-          <p>
-            The ids traffic can be split by. Services send <code>user_id</code> and <code>device_id</code> directly and any other diversion in{" "}
-            <code>{'"ids": {"shop_id": "…"}'}</code>. New ones appear everywhere a diversion is chosen.
-          </p>
-        </div>
-        {isAdmin && (
-          <button className="btn btn-sm" onClick={() => setEditing("new")}>
-            <Icon name="plus" /> New diversion
-          </button>
-        )}
-      </div>
-      <ErrorBox error={error} />
-      <div style={{ padding: "10px 16px" }}>
-        <input className="input" style={{ maxWidth: 360 }} placeholder="Search diversions by key, name or description…" value={q} onChange={(e) => setQ(e.target.value)} />
-      </div>
-      <div className="table-wrap">
-        <table className="tbl tbl-compact">
-          <thead>
-            <tr>
-              <th>Diversion</th>
-              <th>Key</th>
-              <th>Description</th>
-              <th className="num">Layers</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {paged.slice.map((d) => (
-              <tr key={d.key}>
-                <td style={{ fontWeight: 600 }}>
-                  {d.name} {d.builtin && <span className="badge">built in</span>}
-                </td>
-                <td className="mono">{d.key}</td>
-                <td className="faint small">{d.description}</td>
-                <td className="num">{d.layers}</td>
-                <td className="right nowrap">
-                  {isAdmin && (
-                    <>
-                      <button className="icon-btn" aria-label="Edit" onClick={() => setEditing(d)}>
-                        <Icon name="edit" size={15} />
-                      </button>
-                      {!d.builtin && (
-                        <button
-                          className="icon-btn"
-                          aria-label="Delete"
-                          disabled={d.layers > 0}
-                          title={d.layers > 0 ? "Layers split by it" : "Delete"}
-                          onClick={async () => {
-                            if (!confirm(`Delete diversion ${d.key}?`)) return;
-                            setError("");
-                            try {
-                              await api.deleteDiversion(d.key);
-                              await reloadDiversions();
-                            } catch (e) {
-                              setError(e instanceof Error ? e.message : String(e));
-                            }
-                          }}
-                        >
-                          <Icon name="trash" size={15} />
-                        </button>
-                      )}
-                    </>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {found.length === 0 && <div className="small faint" style={{ padding: 16 }}>No diversions match.</div>}
-      </div>
-      <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="diversions" />
-      {editing && <DiversionModal d={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
-    </section>
-  );
-}
-
-function DiversionModal({ d, onClose }: { d: DiversionDef | null; onClose: () => void }) {
-  const [key, setKey] = useState(d?.key ?? "");
-  const [name, setName] = useState(d?.name ?? "");
-  const [description, setDescription] = useState(d?.description ?? "");
-  const [error, setError] = useState("");
-  const save = async () => {
-    setError("");
-    try {
-      if (d) await api.updateDiversion(d.key, { name, description });
-      else await api.createDiversion({ key, name, description });
-      await reloadDiversions();
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-  return (
-    <Modal
-      title={d ? `Edit ${d.key}` : "New diversion"}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn btn-primary" onClick={save}>
-            Save
-          </button>
-        </>
-      }
-    >
-      <Field label="Name">
-        <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Shop id" />
-      </Field>
-      <Field label="Key" hint="Lowercase letters, digits and _. Services send it in the ids object. It can't change later.">
-        <input className="input input-mono" value={key} disabled={!!d} onChange={(e) => setKey(e.target.value)} placeholder="shop_id" />
-      </Field>
-      <Field label="Description">
-        <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} />
-      </Field>
-      <ErrorBox error={error} />
-    </Modal>
   );
 }

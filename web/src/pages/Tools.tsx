@@ -173,11 +173,11 @@ function Diagnose() {
         {sent && (
           <>
             <JsonView
-              title="Request to Libra · POST /api/v1/resolve"
+              title={`Request to Libra · POST ${BASE}/api/v1/abtest/experiments`}
               value={sent.body}
               extra={{
                 label: "curl",
-                text: `curl -X POST ${window.location.origin}${BASE}/api/v1/resolve \\\n  -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(sent.body)}'`,
+                text: `curl -X POST ${window.location.origin}${BASE}/api/v1/abtest/experiments \\\n  -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(sent.body)}'`,
               }}
             />
             <JsonView title="Response from Libra" value={sent.response} />
@@ -329,7 +329,7 @@ function Params() {
   );
 }
 
-// resolveBody builds what a service sends to /api/v1/resolve. Empty
+// resolveBody builds what a service sends to /api/v1/abtest/experiments. Empty
 // selections are sent as "all".
 function resolveBody(ids: Record<string, string>, platforms: string[], businesses: string[], attrs: Record<string, unknown>): ResolveBody {
   const other = Object.fromEntries(Object.entries(ids).filter(([k, v]) => k !== "user_id" && k !== "device_id" && v));

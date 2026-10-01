@@ -16,7 +16,8 @@ type Diversion struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
 	Builtin     bool      `json:"builtin"`
-	Layers      int       `json:"layers"` // layers (incl. dedicated ones) splitting by it
+	Layers      int       `json:"layers"`           // layers (incl. dedicated ones) splitting by it
+	Dedicated   int       `json:"dedicated_layers"` // of those, experiments' own (auto) layers
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -24,7 +25,8 @@ var diversionKey = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 
 func (s *Server) ListDiversions(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.DB.QueryContext(r.Context(), `
-		SELECT d.key, d.name, d.description, d.builtin, d.created_at, (SELECT count(*) FROM layers l WHERE l.diversion = d.key)
+		SELECT d.key, d.name, d.description, d.builtin, d.created_at, (SELECT count(*) FROM layers l WHERE l.diversion = d.key),
+		       (SELECT count(*) FROM layers l WHERE l.diversion = d.key AND l.auto)
 		FROM diversions d ORDER BY d.builtin DESC, d.key`)
 	if err != nil {
 		serverError(w, r, err)
@@ -34,7 +36,7 @@ func (s *Server) ListDiversions(w http.ResponseWriter, r *http.Request) {
 	out := []Diversion{}
 	for rows.Next() {
 		var d Diversion
-		if err := rows.Scan(&d.Key, &d.Name, &d.Description, &d.Builtin, &d.CreatedAt, &d.Layers); err != nil {
+		if err := rows.Scan(&d.Key, &d.Name, &d.Description, &d.Builtin, &d.CreatedAt, &d.Layers, &d.Dedicated); err != nil {
 			serverError(w, r, err)
 			return
 		}

@@ -52,7 +52,7 @@ export default function Integrate() {
           </p>
           <ul className="small muted" style={{ margin: 0, paddingLeft: 18 }}>
             <li>
-              <b>resolve</b>: <code>platform</code> and <code>business</code> each take <code>""</code> or <code>"all"</code> (everything), one key, a
+              <b>abtest/experiments</b>: <code>platform</code> and <code>business</code> each take <code>""</code> or <code>"all"</code> (everything), one key, a
               comma list (<code>{several ? `"${list.slice(0, 2).map((p) => p.key).join(",")}"` : `"${P},other"`}</code>) or a JSON array (
               <code>{`["${P}", "…"]`}</code>). Leave both as <code>"all"</code> for a whole-company config, or narrow down to just what the page needs.
             </li>
@@ -99,12 +99,44 @@ export default function Integrate() {
           )}
         </section>
         <section className="card card-pad stack">
+          <h2>Recommended flow: the backend asks, the frontend follows</h2>
+          <pre className="code">{`app / web ──request──▶ your backend (BFF / gateway) ──POST /libra/api/v1/abtest/experiments──▶ Libra
+    ▲                         │  uses params for ranking, pricing…            │
+    └──── response + "ab": {params the UI needs, variant_ids} ◀───────────────┘
+app logs its events with variant_ids · backend forwards variant_ids to downstream services (header X-Libra-Variants)`}</pre>
+          <ul className="small muted" style={{ margin: 0, paddingLeft: 18 }}>
+            <li>
+              <b>One call per request, made by the backend.</b> It uses the params it needs and returns the UI's part (plus <code>variant_ids</code>) in its
+              own response. Frontend and backend then always agree, because they read the same answer.
+            </li>
+            <li>
+              <b>Never call Libra from the app.</b> The API key would ship inside the app, anyone could read every experiment's config, and each screen
+              would pay an extra round trip.
+            </li>
+            <li>
+              <b>UI-only experiments</b> (layout, colours): load them once at app start or page load through a backend endpoint (e.g.{" "}
+              <code>/app-config</code>) that calls Libra with <code>"log_exposure": false</code>. Cache them for the session, and report the exposure
+              when the screen is actually shown, so users who never see the change don't dilute the result.
+            </li>
+            <li>
+              <b>Other services</b> in the same request: pass <code>variant_ids</code> (or the params) along in a header rather than calling again.
+              Calling again still works, because assignment is a hash of the id and gives the same answer, but it adds load and can disagree for a
+              moment while traffic is being changed.
+            </li>
+            <li>
+              <b>Events</b>: whoever sees the action (app or backend) sends it to <code>/libra/api/v1/events</code> with the same <code>user_id</code>{" "}
+              / <code>device_id</code>. Libra joins events to variants by id, so events don't need <code>variant_ids</code>, but log them anyway for
+              your own debugging.
+            </li>
+          </ul>
+        </section>
+        <section className="card card-pad stack">
           <h2>1. Ask Libra what a user gets</h2>
           <p className="muted">
-            Call <code>resolve</code> when serving a request. It returns merged parameters from every experiment the unit is in (and fully launched
+            Call <code>POST /libra/api/v1/abtest/experiments</code> when serving a request. It returns merged parameters from every experiment the unit is in (and fully launched
             configs), and logs an exposure for each experiment. Needs a key with the <b>runtime</b> scope.
           </p>
-          <pre className="code">{`curl -X POST ${origin}/api/v1/resolve \\
+          <pre className="code">{`curl -X POST ${origin}/api/v1/abtest/experiments \\
   -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\
   -d '{"platform": "${P}", "business": "${B}", "user_id": "user-42", "device_id": "dev-9f3a",
        "attrs": {"region": "ID", "os": "android", "app_version": "10.3.0"}}'
@@ -145,7 +177,7 @@ export default function Integrate() {
             . <code>attrs</code> are matched against targeting rules and kept (up to 10 short values) for report breakdowns. Pass{" "}
             <code>"log_exposure": false</code> to prefetch without logging, then report the exposure when the user actually sees the change:
           </p>
-          <pre className="code">{`curl -X POST ${origin}/api/v1/exposures -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\
+          <pre className="code">{`curl -X POST ${origin}/api/v1/abtest/exposures -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\
   -d '{"exposures": [{"experiment_id": 1, "variant_id": 2, "user_id": "user-42", "attrs": {"region": "ID"}}]}'`}</pre>
         </section>
 
@@ -205,7 +237,7 @@ export default function Integrate() {
           <pre className="code">{`import "github.com/reynerpantou/libra/pkg/client"
 
 c := client.New("${origin}", os.Getenv("LIBRA_KEY"))
-res, err := c.Resolve(ctx, client.ResolveRequest{Platform: "${P}", Business: "${B}", UserID: "user-42", DeviceID: "dev-9f3a",
+res, err := c.GetExperiments(ctx, client.ResolveRequest{Platform: "${P}", Business: "${B}", UserID: "user-42", DeviceID: "dev-9f3a",
     Attrs: map[string]any{"region": "ID"}})
 formula := res.String("${P}.search.ranking.formula", "ctr * cvr")
 

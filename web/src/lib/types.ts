@@ -202,6 +202,7 @@ export interface DiversionDef {
   description: string;
   builtin: boolean;
   layers: number;
+  dedicated_layers: number;
   created_at: string;
 }
 

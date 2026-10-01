@@ -56,35 +56,48 @@ export default function Layout() {
           Libra
         </div>
         <nav className="nav">
+          <div className="nav-label">AB Test</div>
           <NavLink to="/experiments">
             <Icon name="flask" /> Experiments
-          </NavLink>
-          <NavLink to="/businesses">
-            <Icon name="building" /> Businesses & metrics
           </NavLink>
           <NavLink to="/parameters">
             <Icon name="search" /> Parameters
           </NavLink>
+          <div className="nav-label">AB Tuning</div>
+          <NavLink to="/tuning">
+            <Icon name="sliders" /> Tuning <span className="badge nav-soon">Soon</span>
+          </NavLink>
+          <div className="nav-label">Metrics</div>
+          <NavLink to="/businesses">
+            <Icon name="building" /> Businesses & metrics
+          </NavLink>
+          <div className="nav-label">Configuration</div>
           <NavLink to="/layers">
             <Icon name="layers" /> Traffic layers
+          </NavLink>
+          <NavLink to="/diversions">
+            <Icon name="split" /> Diversions
           </NavLink>
           <NavLink to="/attributes">
             <Icon name="target" /> Targeting attributes
           </NavLink>
-          <div className="nav-label">Operate</div>
+          <div className="nav-label">Developers</div>
+          <NavLink to="/integrate">
+            <Icon name="book" /> Integration guide
+          </NavLink>
           <NavLink to="/tools">
             <Icon name="wrench" /> Debug tools
           </NavLink>
           <NavLink to="/pipeline">
             <Icon name="pipe" /> Data pipeline
           </NavLink>
-          <NavLink to="/integrate">
-            <Icon name="chart" /> Integration guide
-          </NavLink>
           {isAdmin && (
-            <NavLink to="/settings">
-              <Icon name="gear" /> Settings
-            </NavLink>
+            <>
+              <div className="nav-label">Admin</div>
+              <NavLink to="/settings">
+                <Icon name="gear" /> Settings
+              </NavLink>
+            </>
           )}
         </nav>
         <div className="sidebar-foot">

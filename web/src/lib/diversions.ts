@@ -5,8 +5,8 @@ import type { DiversionDef } from "./types";
 // Diversions are admin-managed; every page reads the same list, so adding
 // one shows up in layer forms, experiments, diagnose and the guide.
 const builtin: DiversionDef[] = [
-  { key: "user_id", name: "User id", description: "", builtin: true, layers: 0, created_at: "" },
-  { key: "device_id", name: "Device id", description: "", builtin: true, layers: 0, created_at: "" },
+  { key: "user_id", name: "User id", description: "", builtin: true, layers: 0, dedicated_layers: 0, created_at: "" },
+  { key: "device_id", name: "Device id", description: "", builtin: true, layers: 0, dedicated_layers: 0, created_at: "" },
 ];
 let cache: DiversionDef[] | null = null;
 let inflight: Promise<DiversionDef[]> | null = null;
