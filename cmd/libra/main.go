@@ -209,9 +209,16 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 
 	// Runtime API for services (API keys, no cookies)
 	keys := middleware.NewAPIKeys(db)
-	api.Handle("POST /v1/resolve", keys.Require("runtime")(http.HandlerFunc(s.Resolve)))
-	api.Handle("POST /v1/exposures", keys.Require("runtime")(http.HandlerFunc(s.IngestExposures)))
+	// Everything is served under /libra/api: services call
+	// POST /libra/api/v1/abtest/experiments to get a unit's AB tests.
+	abtest := keys.Require("runtime")(http.HandlerFunc(s.Resolve))
+	exposures := keys.Require("runtime")(http.HandlerFunc(s.IngestExposures))
+	api.Handle("POST /v1/abtest/experiments", abtest)
+	api.Handle("POST /v1/abtest/exposures", exposures)
 	api.Handle("POST /v1/events", keys.Require("ingest")(http.HandlerFunc(s.IngestEvents)))
+	// Older names, kept so existing integrations keep working.
+	api.Handle("POST /v1/resolve", abtest)
+	api.Handle("POST /v1/exposures", exposures)
 
 	mux := http.NewServeMux()
 	base := config.BasePath

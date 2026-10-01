@@ -42,9 +42,19 @@ type Client struct {
 
 // New returns a client for the Libra at baseURL, e.g.
 // "https://example.com/libra". Call Close to flush pending events.
+// libraBase accepts either the host ("https://ab.example.com") or the full
+// Libra URL ("https://ab.example.com/libra"); every API lives under /libra.
+func libraBase(u string) string {
+	u = strings.TrimRight(u, "/")
+	if !strings.HasSuffix(u, "/libra") {
+		u += "/libra"
+	}
+	return u
+}
+
 func New(baseURL, apiKey string) *Client {
 	c := &Client{
-		base: strings.TrimRight(baseURL, "/"), key: apiKey,
+		base: libraBase(baseURL), key: apiKey,
 		http:          &http.Client{Timeout: 5 * time.Second},
 		flushCh:       make(chan struct{}, 1),
 		done:          make(chan struct{}),
@@ -145,14 +155,20 @@ func (r *ResolveResponse) Variant(experimentID int64) string {
 	return ""
 }
 
-// Resolve asks Libra which experiments and parameters apply to a unit. On
-// error, callers should fall back to their defaults.
-func (c *Client) Resolve(ctx context.Context, req ResolveRequest) (*ResolveResponse, error) {
+// GetExperiments asks Libra which AB tests and parameters apply to a unit
+// (POST /libra/api/v1/abtest/experiments). On error, callers should fall
+// back to their defaults.
+func (c *Client) GetExperiments(ctx context.Context, req ResolveRequest) (*ResolveResponse, error) {
 	var out ResolveResponse
-	if err := c.post(ctx, "/api/v1/resolve", req, &out); err != nil {
+	if err := c.post(ctx, "/api/v1/abtest/experiments", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// Resolve is the older name of GetExperiments.
+func (c *Client) Resolve(ctx context.Context, req ResolveRequest) (*ResolveResponse, error) {
+	return c.GetExperiments(ctx, req)
 }
 
 type Exposure struct {
@@ -166,7 +182,7 @@ type Exposure struct {
 
 // LogExposures reports exposures for units resolved with LogExposure=false.
 func (c *Client) LogExposures(ctx context.Context, xs []Exposure) error {
-	return c.post(ctx, "/api/v1/exposures", map[string]any{"exposures": xs}, nil)
+	return c.post(ctx, "/api/v1/abtest/exposures", map[string]any{"exposures": xs}, nil)
 }
 
 type Event struct {

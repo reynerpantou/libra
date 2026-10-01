@@ -75,6 +75,28 @@ export function ToneLegend() {
   );
 }
 
+// ColourHelp hides the colour legend behind a button so it doesn't repeat
+// on every results card.
+function ColourHelp() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button type="button" className="link-btn small" onClick={() => setOpen(!open)} aria-expanded={open}>
+        {open ? "Hide colour guide" : "How to read the colours"}
+      </button>
+      {open && (
+        <>
+          <ToneLegend />
+          <p className="small faint" style={{ margin: 0 }}>
+            Green / red follow each metric's "good when" setting (for latency, lower is better). A highlighted cell is statistically significant; plain
+            coloured text is a direction only — not enough evidence yet.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 // CopyButton copies text and says so for a moment.
 function CopyButton({ text, label = "Copy", title, className = "copy-btn" }: { text: () => string; label?: string; title?: string; className?: string }) {
   const [done, setDone] = useState(false);
@@ -337,11 +359,7 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
                   <p>
                     {fmtInt(seg.units)} units · {r.from} to {r.to} · {Math.round((1 - r.alpha) * 100)}% confidence intervals · click a metric for its trend
                   </p>
-                  <ToneLegend />
-                  <p className="small faint">
-                    Green / red follow each metric's "good when" setting (for latency, lower is better). A highlighted cell is statistically significant; plain
-                    coloured text is a direction only — not enough evidence yet.
-                  </p>
+                  <ColourHelp />
                 </div>
               </div>
               {groupsOf(seg).map(({ g, key, ms: all }) => {

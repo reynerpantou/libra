@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Empty, ErrorBox, Field, Icon, Loading, Modal, Segmented } from "../components/ui";
 import { api } from "../lib/api";
@@ -213,32 +213,8 @@ export default function Businesses() {
                     <div className="card-pad">
                       <p className="faint small">No businesses{filtering ? " match" : " yet"}.</p>
                     </div>
-                  ) : view === "list" ? (
-                    <BusinessTable businesses={bs} />
                   ) : (
-                    <div className="card-pad">
-                      <div className="grid-3">
-                        {bs.map((b) => (
-                          <button key={b.id} className="card card-pad stack-sm" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => nav(`/businesses/${b.id}`)}>
-                            <div className="row-between">
-                              <h3>{b.name}</h3>
-                              <span className="row" style={{ gap: 4 }}>
-                                <span className="chip">{b.key}</span>
-                                <span className="chip" title="Business id">
-                                  id {b.id}
-                                </span>
-                              </span>
-                            </div>
-                            <p className="muted small" style={{ minHeight: 20 }}>
-                              {b.description || "No description"}
-                            </p>
-                            <div className="row small faint">
-                              <span>{b.metrics} metrics</span>·<span>{b.measures} measures</span>·<span>{b.experiments} experiments</span>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                    <BusinessPages businesses={bs} view={view} onOpen={(b) => nav(`/businesses/${b.id}`)} />
                   ))}
               </section>
             );
@@ -250,6 +226,73 @@ export default function Businesses() {
         <BusinessModal platforms={platforms} platformId={creating} onClose={() => setCreating(null)} onSaved={(b) => nav(`/businesses/${b.id}`)} />
       )}
     </div>
+  );
+}
+
+// BusinessPages shows a platform's businesses a page at a time — a 3×3
+// grid of cards (or 10 rows) with Previous / Next.
+function BusinessPages({ businesses, view, onOpen }: { businesses: Business[]; view: string; onOpen: (b: Business) => void }) {
+  const size = view === "list" ? 10 : 9;
+  const [page, setPage] = useState(0);
+  const pages = Math.max(1, Math.ceil(businesses.length / size));
+  // Searching or filtering can shrink the list under the current page.
+  useEffect(() => {
+    if (page >= pages) setPage(pages - 1);
+  }, [page, pages]);
+  const shown = businesses.slice(page * size, page * size + size);
+  const pager =
+    pages > 1 ? (
+      <div className="row-between small" style={{ padding: "10px 16px", borderTop: "1px solid var(--border)" }}>
+        <span className="faint">
+          {page * size + 1}–{Math.min(businesses.length, (page + 1) * size)} of {businesses.length}
+        </span>
+        <div className="row" style={{ gap: 6 }}>
+          <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>
+            ‹ Previous
+          </button>
+          <span className="faint">
+            {page + 1} / {pages}
+          </span>
+          <button className="btn btn-sm" disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>
+            Next ›
+          </button>
+        </div>
+      </div>
+    ) : null;
+  if (view === "list")
+    return (
+      <>
+        <BusinessTable businesses={shown} />
+        {pager}
+      </>
+    );
+  return (
+    <>
+      <div className="card-pad">
+        <div className="grid-3">
+          {shown.map((b) => (
+            <button key={b.id} className="card card-pad stack-sm" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => onOpen(b)}>
+              <div className="row-between">
+                <h3>{b.name}</h3>
+                <span className="row" style={{ gap: 4 }}>
+                  <span className="chip">{b.key}</span>
+                  <span className="chip" title="Business id">
+                    id {b.id}
+                  </span>
+                </span>
+              </div>
+              <p className="muted small" style={{ minHeight: 20 }}>
+                {b.description || "No description"}
+              </p>
+              <div className="row small faint">
+                <span>{b.metrics} metrics</span>·<span>{b.measures} measures</span>·<span>{b.experiments} experiments</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+      {pager}
+    </>
   );
 }
 

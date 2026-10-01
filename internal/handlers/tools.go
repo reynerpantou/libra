@@ -19,7 +19,7 @@ func (s *Server) Diagnose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snap := s.Store.Snapshot()
-	// The same answer a service gets from /v1/resolve (nothing logged),
+	// The same answer a service gets from /v1/abtest/experiments (nothing logged),
 	// plus the trace explaining each experiment.
 	out, res, msg := resolveFor(snap, req, true)
 	if msg != "" {

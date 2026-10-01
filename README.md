@@ -9,7 +9,7 @@ It's one Go binary serving the web app, the management API, the runtime API
 for your services, and the data pipeline, all backed by Postgres.
 
 ```
- your services ──resolve──▶ ┌──────────── Libra ────────────┐
+ your services ──abtest───▶ ┌──────────── Libra ────────────┐
    (who gets what)          │ in-memory snapshot → assign   │──▶ exposures ─┐
                             └───────────────────────────────┘               │
  your services ──events───────────────────────────────────────▶ events ────┤
@@ -160,7 +160,7 @@ Create an API key in **Settings**, or with `libra api-key <name> runtime,ingest`
 ```bash
 # What does this user get? (logs exposures)
 # LIBRA=http://localhost:8080/libra
-curl -X POST $LIBRA/api/v1/resolve -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+curl -X POST $LIBRA/api/v1/abtest/experiments -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"user_id":"user-42","device_id":"dev-9f3a","business":"search","attrs":{"region":"ID","device":"android","app_version":"3.500"}}'
 
 # Business events (batches up to 5,000; ts may be up to 30 days old)
