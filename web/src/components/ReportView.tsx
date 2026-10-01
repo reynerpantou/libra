@@ -24,15 +24,55 @@ export function verdict(c: Comparison, m: Pick<MetricResult, "direction">): { te
       return { text: `Significant negative ${arrow}`, cls: "b-bad", title: `Significant ${moved} — bad for this metric (${pref})` };
     case "changed":
       return {
-        text: `Significant ${arrow} · neutral`,
+        text: `Significant change ${arrow}`,
         cls: "b-accent",
-        title: `Significant ${moved}. This metric is set to "either way", so Libra doesn't judge it good or bad — you decide`,
+        title: `Significant ${moved}, but this metric has no "good when" direction, so Libra can't call it positive or negative. Set "Good when" on the metric to get green/red.`,
       };
     case "flat":
       return { text: "Not significant", cls: "", title: "The confidence interval includes zero: no detectable difference" };
     default:
       return { text: "Too little data", cls: "", title: "Not enough units or variance to test yet" };
   }
+}
+
+// tone colours a lift the TikTok Shop way: green text when it moved in the
+// metric's good direction, red when bad, grey when there's no direction or
+// no change; a filled highlight only when the change is significant.
+export function tone(c: Comparison | undefined, m: Pick<MetricResult, "direction">): string {
+  if (!c) return "tone-none";
+  const d = c.rel_diff ?? c.abs_diff ?? 0;
+  const sig = c.verdict === "better" || c.verdict === "worse" || c.verdict === "changed";
+  let t = "none";
+  if (d !== 0 && m.direction !== "neutral" && m.direction) t = (d > 0) === (m.direction === "increase") ? "good" : "bad";
+  if (c.verdict === "better") t = "good";
+  if (c.verdict === "worse") t = "bad";
+  return `tone-${t}${sig ? (c.verdict === "changed" ? " sig-change" : " sig") : ""}`;
+}
+
+// ToneLegend explains the colours.
+export function ToneLegend() {
+  return (
+    <div className="legend tone-legend">
+      <span>
+        <span className="tone-sample tone-good sig">+2.1%</span> significant positive
+      </span>
+      <span>
+        <span className="tone-sample tone-bad sig">−2.1%</span> significant negative
+      </span>
+      <span>
+        <span className="tone-sample tone-good">+0.4%</span> positive, not significant
+      </span>
+      <span>
+        <span className="tone-sample tone-bad">−0.4%</span> negative, not significant
+      </span>
+      <span>
+        <span className="tone-sample tone-none">0.0%</span> no change / too little data
+      </span>
+      <span>
+        <span className="tone-sample tone-none sig-change">+1.5%</span> significant, metric has no "good when" direction
+      </span>
+    </div>
+  );
 }
 
 // CopyButton copies text and says so for a moment.
@@ -297,10 +337,10 @@ export default function ReportView({ experiment: e }: { experiment: Experiment }
                   <p>
                     {fmtInt(seg.units)} units · {r.from} to {r.to} · {Math.round((1 - r.alpha) * 100)}% confidence intervals · click a metric for its trend
                   </p>
+                  <ToneLegend />
                   <p className="small faint">
-                    <b>Significant positive</b> / <b>negative</b>: a real change that's good / bad for the metric (its "good when" setting decides — for latency,
-                    lower is better). <b>Significant · neutral</b>: a real change in a metric with no preferred direction (e.g. ads share), so it's not judged.
-                    Arrows show which way it moved. <b>Not significant</b>: no detectable difference yet.
+                    Green / red follow each metric's "good when" setting (for latency, lower is better). A highlighted cell is statistically significant; plain
+                    coloured text is a direction only — not enough evidence yet.
                   </p>
                 </div>
               </div>
@@ -516,7 +556,7 @@ function MetricMatrix({
                   return (
                     <td
                       key={t.id}
-                      className={`num cell-${c.verdict}`}
+                      className={`num ${tone(c, m)}`}
                       title={`${t.name || t.key}: ${fmtValue(tv?.value ?? null, m.format, m.decimals)} · ${fmtPct(c.rel_ci_low, 1)} to ${fmtPct(
                         c.rel_ci_high,
                         1
@@ -596,7 +636,7 @@ function MetricTable({
                 {treatments.map((t, ti) => {
                   const tv = m.values.find((v) => v.variant_id === t.id);
                   const c = m.comparisons.find((x) => x.variant_id === t.id);
-                  const cls = !c ? "lift-flat" : c.verdict === "better" ? "lift-good" : c.verdict === "worse" ? "lift-bad" : "lift-flat";
+                  const cls = tone(c, m);
                   return (
                     <tr
                       key={t.id}

@@ -57,9 +57,13 @@ func New(baseURL, apiKey string) *Client {
 }
 
 type ResolveRequest struct {
-	UserID      string         `json:"user_id,omitempty"`
-	DeviceID    string         `json:"device_id,omitempty"`
-	Platform    string         `json:"platform,omitempty"` // required when Libra has several platforms
+	UserID   string            `json:"user_id,omitempty"`
+	DeviceID string            `json:"device_id,omitempty"`
+	IDs      map[string]string `json:"ids,omitempty"` // other diversions, e.g. {"shop_id": "s-1"}
+	// Platform and Business: "" or "all" for everything, one key or a comma
+	// list ("tokopedia,tiktokshop"). A business can be qualified as
+	// "platform/business" to pick one platform's.
+	Platform    string         `json:"platform,omitempty"`
 	Business    string         `json:"business,omitempty"`
 	Attrs       map[string]any `json:"attrs,omitempty"`
 	LogExposure *bool          `json:"log_exposure,omitempty"`
@@ -78,8 +82,11 @@ type Hit struct {
 type ResolveResponse struct {
 	UserID          string         `json:"user_id"`
 	DeviceID        string         `json:"device_id"`
+	Platforms       []string       `json:"platforms"`  // the platforms resolved from the request
+	Businesses      []string       `json:"businesses"` // "platform/business" pairs
 	SnapshotVersion int64          `json:"snapshot_version"`
 	Params          map[string]any `json:"params"`
+	VariantIDs      []int64        `json:"variant_ids"` // every variant the unit got: log them with your events
 	Hits            []Hit          `json:"hits"`
 }
 

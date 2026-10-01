@@ -14,31 +14,26 @@ import (
 // Diagnose explains, experiment by experiment, what a unit gets and why —
 // the "why didn't this user hit my experiment?" tool. Nothing is logged.
 func (s *Server) Diagnose(w http.ResponseWriter, r *http.Request) {
-	var req assign.Request
+	var req resolveRequest
 	if !decodeOr400(w, r, &req) {
 		return
 	}
-	req.UserID, req.DeviceID = strings.TrimSpace(req.UserID), strings.TrimSpace(req.DeviceID)
-	if req.UserID == "" {
-		req.UserID = strings.TrimSpace(req.UnitID)
-	}
-	if msg := checkIDs(req.UserID, req.DeviceID, req.IDs, false); msg != "" {
+	snap := s.Store.Snapshot()
+	// The same answer a service gets from /v1/resolve (nothing logged),
+	// plus the trace explaining each experiment.
+	out, res, msg := resolveFor(snap, req, true)
+	if msg != "" {
 		badRequest(w, msg)
 		return
 	}
-	snap := s.Store.Snapshot()
-	// Diagnose may look across everything; a platform or business given
-	// is checked the same way the runtime API checks it.
-	if req.Platform != "" || req.Business != "" {
-		platform, business, msg := snap.Scope(req.Platform, req.Business)
-		if msg != "" {
-			badRequest(w, msg)
-			return
-		}
-		req.Platform, req.Business = platform, business
-	}
-	res := snap.Resolve(req, true)
-	writeJSON(w, http.StatusOK, map[string]any{"snapshot_version": snap.Version, "result": res})
+	trace := out.Trace
+	out.Trace = nil
+	writeJSON(w, http.StatusOK, map[string]any{
+		"snapshot_version": snap.Version,
+		"request":          req,
+		"response":         out,
+		"result":           map[string]any{"hits": res.Hits, "params": res.Params, "trace": trace, "conflicts": res.Conflicts},
+	})
 }
 
 // ParamSearch finds which experiments set a parameter path.

@@ -16,14 +16,36 @@ import (
 // MaxBatch caps items per ingestion request.
 const MaxBatch = 5000
 
+// selector is a platform or business selection: "" / "all" for everything,
+// one key, a comma-separated list, or a JSON array of keys.
+type selector string
+
+func (s *selector) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*s = selector(one)
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return fmt.Errorf("must be a string or a list of strings")
+	}
+	*s = selector(strings.Join(many, ","))
+	return nil
+}
+
 type resolveRequest struct {
 	UserID   string            `json:"user_id,omitempty"`
 	DeviceID string            `json:"device_id,omitempty"`
-	IDs      map[string]string `json:"ids,omitempty"`      // other diversions, e.g. {"shop_id": "s-1"}
-	UnitID   string            `json:"unit_id,omitempty"`  // older name for user_id
-	Platform string            `json:"platform,omitempty"` // required when there are several platforms
-	Business string            `json:"business,omitempty"` // optional: only this business's experiments
-	Attrs    map[string]any    `json:"attrs,omitempty"`
+	IDs      map[string]string `json:"ids,omitempty"`     // other diversions, e.g. {"shop_id": "s-1"}
+	UnitID   string            `json:"unit_id,omitempty"` // older name for user_id
+	// Platform and business: "" or "all" for everything, a key, a list
+	// ("tokopedia,tiktokshop" or ["tokopedia", "tiktokshop"]). A business
+	// can be qualified "tokopedia/search"; a bare key means that business
+	// on every selected platform.
+	Platform selector       `json:"platform,omitempty"`
+	Business selector       `json:"business,omitempty"`
+	Attrs    map[string]any `json:"attrs,omitempty"`
 	// LogExposure records exposures (default true). Set false when the
 	// caller only prefetches config and will report exposures itself.
 	LogExposure *bool `json:"log_exposure,omitempty"`
@@ -33,13 +55,46 @@ type resolveRequest struct {
 type resolveResponse struct {
 	UserID          string            `json:"user_id,omitempty"`
 	DeviceID        string            `json:"device_id,omitempty"`
-	Platform        string            `json:"platform,omitempty"`
-	Business        string            `json:"business,omitempty"`
+	Platforms       []string          `json:"platforms"`  // selected platforms ([] = all)
+	Businesses      []string          `json:"businesses"` // selected platform/business pairs ([] = all)
 	SnapshotVersion int64             `json:"snapshot_version"`
 	Params          map[string]any    `json:"params"`
+	VariantIDs      []int64           `json:"variant_ids"` // every variant this unit got, for logging and debugging
 	Hits            []assign.Hit      `json:"hits"`
 	Conflicts       []assign.Conflict `json:"conflicts,omitempty"`
 	Trace           []assign.Step     `json:"trace,omitempty"`
+}
+
+// resolveFor answers a resolve request against a snapshot. The message is
+// set when the request is invalid.
+func resolveFor(snap *assign.Snapshot, req resolveRequest, trace bool) (resolveResponse, assign.Result, string) {
+	req.UserID, req.DeviceID = strings.TrimSpace(req.UserID), strings.TrimSpace(req.DeviceID)
+	if req.UserID == "" {
+		req.UserID = strings.TrimSpace(req.UnitID)
+	}
+	if msg := checkIDs(req.UserID, req.DeviceID, req.IDs, false); msg != "" {
+		return resolveResponse{}, assign.Result{}, msg
+	}
+	platforms, businesses, msg := snap.Scope(string(req.Platform), string(req.Business))
+	if msg != "" {
+		return resolveResponse{}, assign.Result{}, msg
+	}
+	res := snap.Resolve(assign.Request{UserID: req.UserID, DeviceID: req.DeviceID, IDs: req.IDs, Platforms: platforms, Businesses: businesses, Attrs: req.Attrs}, trace)
+	out := resolveResponse{
+		UserID: req.UserID, DeviceID: req.DeviceID, Platforms: orEmpty(platforms), Businesses: orEmpty(businesses), SnapshotVersion: snap.Version,
+		Params: res.Params, VariantIDs: []int64{}, Hits: res.Hits, Conflicts: res.Conflicts, Trace: res.Trace,
+	}
+	for _, h := range res.Hits {
+		out.VariantIDs = append(out.VariantIDs, h.VariantID)
+	}
+	return out, res, ""
+}
+
+func orEmpty(xs []string) []string {
+	if xs == nil {
+		return []string{}
+	}
+	return xs
 }
 
 // Resolve returns the unit's experiments and merged parameters, and logs
@@ -50,21 +105,11 @@ func (s *Server) Resolve(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "could not read the request: "+err.Error())
 		return
 	}
-	req.UserID, req.DeviceID = strings.TrimSpace(req.UserID), strings.TrimSpace(req.DeviceID)
-	if req.UserID == "" {
-		req.UserID = strings.TrimSpace(req.UnitID)
-	}
-	if msg := checkIDs(req.UserID, req.DeviceID, req.IDs, false); msg != "" {
-		badRequest(w, msg)
-		return
-	}
-	snap := s.Store.Snapshot()
-	platform, business, msg := snap.Scope(strings.TrimSpace(req.Platform), strings.TrimSpace(req.Business))
+	out, res, msg := resolveFor(s.Store.Snapshot(), req, req.Debug)
 	if msg != "" {
 		badRequest(w, msg)
 		return
 	}
-	res := snap.Resolve(assign.Request{UserID: req.UserID, DeviceID: req.DeviceID, IDs: req.IDs, Platform: platform, Business: business, Attrs: req.Attrs}, req.Debug)
 	if req.LogExposure == nil || *req.LogExposure {
 		now := time.Now().UTC()
 		attrs := serving.DimensionAttrs(req.Attrs)
@@ -74,10 +119,7 @@ func (s *Server) Resolve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, resolveResponse{
-		UserID: req.UserID, DeviceID: req.DeviceID, Platform: platform, Business: business, SnapshotVersion: snap.Version, Params: res.Params, Hits: res.Hits,
-		Conflicts: res.Conflicts, Trace: res.Trace,
-	})
+	writeJSON(w, http.StatusOK, out)
 }
 
 type exposureIn struct {
@@ -251,6 +293,9 @@ var bizCache struct {
 // when only one platform has it; otherwise the platform is needed. The
 // string is why it wasn't found.
 func (s *Server) businessID(ctx context.Context, platform, key string) (int64, string, error) {
+	if p, k, ok := strings.Cut(key, "/"); ok && platform == "" {
+		platform, key = p, k // "tokopedia/search"
+	}
 	bizCache.Lock()
 	defer bizCache.Unlock()
 	full := platform + "/" + key

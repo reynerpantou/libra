@@ -150,7 +150,7 @@ export default function Experiments() {
                       <StatusBadge status={e.status} />
                     </td>
                     <td>
-                      {e.business_name} <span className="faint small">· {e.platform_name}</span>
+                      {(e.business_names?.length ? e.business_names : [e.business_name]).join(", ")} <span className="faint small">· {e.platform_name}</span>
                     </td>
                     <td className="faint">{e.layer_auto ? "dedicated" : e.layer_name}</td>
                     <td className="num">{e.status === "active" || e.status === "paused" ? trafficPct(e.traffic_held) : <span className="faint">{trafficPct(e.traffic_target)}</span>}</td>

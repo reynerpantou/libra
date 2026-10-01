@@ -118,19 +118,20 @@ type Variant struct {
 }
 
 type Experiment struct {
-	ID          int64
-	BusinessKey string
-	PlatformKey string
-	LayerID     int64
-	Name        string
-	Status      string
-	Salt        string
-	Buckets     []int // held buckets, in the order they were added
-	Targeting   Targeting
-	Variants    []Variant
-	Whitelist   map[string]int64 // unit id (of the layer's diversion) -> forced variant id
-	LaunchedVar int64            // for launched experiments
-	LaunchOrder int64            // launch time (unix) — later launches override earlier ones
+	ID           int64
+	BusinessKey  string   // primary business
+	BusinessKeys []string // every business it runs in (primary first)
+	PlatformKey  string
+	LayerID      int64
+	Name         string
+	Status       string
+	Salt         string
+	Buckets      []int // held buckets, in the order they were added
+	Targeting    Targeting
+	Variants     []Variant
+	Whitelist    map[string]int64 // unit id (of the layer's diversion) -> forced variant id
+	LaunchedVar  int64            // for launched experiments
+	LaunchOrder  int64            // launch time (unix) — later launches override earlier ones
 	// LaunchRollout is the share of units (per mille) a launched variant
 	// serves while it rolls out gradually; 1000 (or 0, unset) is everyone.
 	LaunchRollout int
@@ -155,40 +156,97 @@ type Snapshot struct {
 	Platforms map[string][]string
 }
 
-// Scope checks a request's platform and business against the known ones.
-// A business key alone is fine when only one platform has it (the platform
-// is filled in); with several platforms, a request must name one.
-func (s *Snapshot) Scope(platform, business string) (string, string, string) {
-	if platform != "" {
-		keys, ok := s.Platforms[platform]
-		if !ok {
-			return "", "", "unknown platform " + platform
+// keys reads a selector: "", "all" or "*" mean everything (nil); otherwise
+// a comma-separated list.
+func keys(v string) []string {
+	var out []string
+	for _, k := range strings.Split(v, ",") {
+		k = strings.TrimSpace(k)
+		if k == "all" || k == "*" {
+			return nil
 		}
-		if business != "" && !contains(keys, business) {
-			return "", "", fmt.Sprintf("platform %s has no business %s", platform, business)
+		if k != "" && !contains(out, k) {
+			out = append(out, k)
 		}
-		return platform, business, ""
 	}
-	if business != "" {
-		var found []string
-		for p, keys := range s.Platforms {
-			if contains(keys, business) {
-				found = append(found, p)
+	return out
+}
+
+// Scope resolves a request's platform and business selectors — each "",
+// "all", or a comma-separated list — into platform keys and
+// "platform/business" pairs (nil = all). A business may be written
+// "platform/business"; a bare key means that business on every selected
+// platform that has it. Because a business is always tied to its platform
+// (and parameters live under the platform key), equal business keys on
+// different platforms never collide. The message says what's wrong.
+func (s *Snapshot) Scope(platform, business string) ([]string, []string, string) {
+	platforms := keys(platform)
+	for _, p := range platforms {
+		if _, ok := s.Platforms[p]; !ok {
+			return nil, nil, "unknown platform " + p
+		}
+	}
+	inSelected := func(p string) bool { return len(platforms) == 0 || contains(platforms, p) }
+	var pairs []string
+	for _, b := range keys(business) {
+		if p, k, ok := strings.Cut(b, "/"); ok {
+			if _, known := s.Platforms[p]; !known {
+				return nil, nil, "unknown platform " + p + " in business " + b
+			}
+			if !contains(s.Platforms[p], k) {
+				return nil, nil, fmt.Sprintf("platform %s has no business %s", p, k)
+			}
+			if !inSelected(p) {
+				return nil, nil, fmt.Sprintf("business %s is on platform %s, which isn't selected", b, p)
+			}
+			pairs = append(pairs, b)
+			continue
+		}
+		found := false
+		names := make([]string, 0, len(s.Platforms))
+		for p := range s.Platforms {
+			names = append(names, p)
+		}
+		sort.Strings(names)
+		for _, p := range names {
+			if inSelected(p) && contains(s.Platforms[p], b) {
+				pairs = append(pairs, p+"/"+b)
+				found = true
 			}
 		}
-		switch len(found) {
-		case 0:
-			return "", "", "unknown business " + business
-		case 1:
-			return found[0], business, ""
+		if !found {
+			if len(platforms) > 0 {
+				return nil, nil, fmt.Sprintf("no selected platform (%s) has business %s", strings.Join(platforms, ", "), b)
+			}
+			return nil, nil, "unknown business " + b
 		}
-		sort.Strings(found)
-		return "", "", fmt.Sprintf("business %s exists on several platforms (%s); send platform too", business, strings.Join(found, ", "))
 	}
-	if len(s.Platforms) > 1 {
-		return "", "", "send platform (and optionally business): there are several platforms, and a request without one would mix their experiments"
+	return platforms, pairs, ""
+}
+
+// inScope checks an experiment against the request's platform and
+// business selection.
+func (req Request) inScope(e *Experiment) (bool, string, string) {
+	platforms := req.Platforms
+	if req.Platform != "" {
+		platforms = append(append([]string{}, platforms...), req.Platform)
 	}
-	return "", "", ""
+	if len(platforms) > 0 && !contains(platforms, e.PlatformKey) {
+		return false, "experiment belongs to platform " + e.PlatformKey, "other_platform"
+	}
+	if len(req.Businesses) == 0 && req.Business == "" {
+		return true, "", ""
+	}
+	bs := e.BusinessKeys
+	if len(bs) == 0 {
+		bs = []string{e.BusinessKey}
+	}
+	for _, k := range bs {
+		if contains(req.Businesses, e.PlatformKey+"/"+k) || (req.Business != "" && k == req.Business) {
+			return true, "", ""
+		}
+	}
+	return false, "experiment runs in " + e.PlatformKey + "/" + strings.Join(bs, ", "), "other_business"
 }
 
 func contains(xs []string, x string) bool {
@@ -261,7 +319,12 @@ type Request struct {
 	UnitID   string            `json:"unit_id,omitempty"`
 	Platform string            `json:"platform,omitempty"` // only this platform's experiments; empty = all
 	Business string            `json:"business,omitempty"` // only this business's experiments; empty = all
-	Attrs    map[string]any    `json:"attrs,omitempty"`
+	// Platforms and Businesses select several at once (empty = all).
+	// Businesses are "platform/business" pairs, so equal keys on different
+	// platforms never mix.
+	Platforms  []string       `json:"-"`
+	Businesses []string       `json:"-"`
+	Attrs      map[string]any `json:"attrs,omitempty"`
 }
 
 // ID returns the request's id for a diversion type.
@@ -337,12 +400,8 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 				res.Trace = append(res.Trace, step)
 			}
 		}
-		if req.Platform != "" && e.PlatformKey != req.Platform {
-			record("other_platform", "experiment belongs to platform "+e.PlatformKey)
-			continue
-		}
-		if req.Business != "" && e.BusinessKey != req.Business {
-			record("other_business", "experiment belongs to business "+e.BusinessKey)
+		if ok, why, outcome := req.inScope(e); !ok {
+			record(outcome, why)
 			continue
 		}
 		l := s.Layers[e.LayerID]

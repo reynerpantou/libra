@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { Combobox } from "../components/Combobox";
 import { GroupPicker } from "../components/GroupPicker";
 import { JsonEditor, NamespacedJson } from "../components/JsonEditor";
-import { ErrorBox, Field, Icon, Loading, Segmented, TrafficBar } from "../components/ui";
+import { ErrorBox, Field, Icon, Loading, Modal, Segmented, TrafficBar } from "../components/ui";
 import { diversionName, useDiversions } from "../lib/diversions";
 import { api, type ExperimentInput } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -40,7 +40,10 @@ export default function ExperimentForm() {
   }, []);
   const existing = useAsync(async () => (editing ? api.experiment(Number(id)) : null), [id]);
 
-  const [businessId, setBusinessId] = useState(0);
+  // The first business is the primary one; all must share a platform.
+  const [businessIds, setBusinessIds] = useState<number[]>([]);
+  const businessId = businessIds[0] ?? 0;
+  const [confirming, setConfirming] = useState(false);
   const [layerId, setLayerId] = useState(0);
   const [name, setName] = useState("");
   const [hypothesis, setHypothesis] = useState("");
@@ -50,7 +53,7 @@ export default function ExperimentForm() {
   const [targeting, setTargeting] = useState<Targeting>({ groups: [] });
   const [groupIds, setGroupIds] = useState<number[]>([]);
   const [mode, setMode] = useState<"layer" | "auto">("layer");
-  const [autoDiversion, setAutoDiversion] = useState("user_id");
+  const [autoDiversion, setAutoDiversion] = useState("");
   const diversions = useDiversions();
   const [variants, setVariants] = useState<VariantDraft[]>(blankVariants());
   const [error, setError] = useState("");
@@ -59,7 +62,7 @@ export default function ExperimentForm() {
   useEffect(() => {
     const e = existing.data;
     if (!e) return;
-    setBusinessId(e.business_id);
+    setBusinessIds(e.business_ids?.length ? e.business_ids : [e.business_id]);
     setMode(e.layer_auto ? "auto" : "layer");
     if (e.layer_auto) setAutoDiversion(e.layer_diversion);
     else setLayerId(e.layer_id);
@@ -80,9 +83,8 @@ export default function ExperimentForm() {
     const keys = Array.from(new Set(refs.data.businesses.map((b) => b.platform_key)));
     if (!platformPick && keys.length === 1) setPlatformPick(keys[0]);
     const inPlatform = refs.data.businesses.filter((b) => b.platform_key === (platformPick || keys[0]));
-    if (!businessId && keys.length === 1 && inPlatform.length === 1) setBusinessId(inPlatform[0].id);
-    if (!layerId && refs.data.layers[0]) setLayerId(refs.data.layers[0].id);
-  }, [refs.data, editing, businessId, layerId, platformPick]);
+    if (!businessId && keys.length === 1 && inPlatform.length === 1) setBusinessIds([inPlatform[0].id]);
+  }, [refs.data, editing, businessId, platformPick]);
 
   const locked = existing.data?.status === "active" || existing.data?.status === "paused";
   const total = variants.reduce((s, v) => s + (Number(v.weight) || 0), 0);
@@ -96,8 +98,9 @@ export default function ExperimentForm() {
   const platformOptions = Array.from(new Map((refs.data?.businesses ?? []).map((b) => [b.platform_key, b.platform_name])).entries())
     .sort((a, b) => a[1].localeCompare(b[1]))
     .map(([key, name]) => ({ value: key, label: name, hint: key }));
+  const chosen = businessIds.map((bid) => refs.data?.businesses.find((b) => b.id === bid)).filter((b): b is NonNullable<typeof b> => !!b);
   const businessOptions = (refs.data?.businesses ?? [])
-    .filter((b) => b.platform_key === shownPlatform)
+    .filter((b) => b.platform_key === shownPlatform && !businessIds.includes(b.id))
     .map((b) => ({ value: String(b.id), label: b.name, hint: b.key }));
   // Don't let a draft plan more traffic than its layer has free.
   useEffect(() => {
@@ -123,18 +126,23 @@ export default function ExperimentForm() {
     setVariants(variants.map((v, i) => ({ ...v, weight: i === 0 ? 1000 - base * (n - 1) : base })));
   };
 
-  const save = async () => {
+  // check validates the form before the confirmation box opens.
+  const check = () => {
     setError("");
-    if (!platformKey || !businessId) {
-      setError("Choose the platform and business first.");
-      return;
-    }
-    if (paramErrors.some(Boolean)) {
-      setError("Fix the variant parameters (they must be JSON objects).");
-      return;
-    }
+    if (!name.trim()) return setError("Give the experiment a name.");
+    if (!platformKey || !businessId) return setError("Choose the platform and at least one business.");
+    if (!locked && mode === "auto" && !autoDiversion) return setError("Choose what to split traffic by.");
+    if (!locked && mode === "layer" && !layerId) return setError("Choose a traffic layer.");
+    if (paramErrors.some(Boolean)) return setError("Fix the variant parameters (they must be JSON objects).");
+    if (total !== 1000) return setError(`Variant weights must add up to 100% (now ${trafficPct(total)}).`);
+    setConfirming(true);
+  };
+
+  const save = async () => {
+    setConfirming(false);
     const input: ExperimentInput = {
       business_id: businessId,
+      business_ids: businessIds,
       layer_id: mode === "auto" ? (existing.data?.layer_auto ? existing.data.layer_id : 0) : layerId,
       auto_diversion: mode === "auto" ? autoDiversion : undefined,
       name,
@@ -211,7 +219,7 @@ export default function ExperimentForm() {
                   onChange={(v) => {
                     setPlatformPick(v);
                     if (business?.platform_key !== v) {
-                      setBusinessId(0);
+                      setBusinessIds([]);
                       setGroupIds([]);
                     }
                   }}
@@ -219,16 +227,43 @@ export default function ExperimentForm() {
                 />
               )}
             </Field>
-            <Field label="Business" hint="Its and its platform's default metric groups are always in the report.">
+            <Field
+              group
+              label="Businesses"
+              hint="Pick one or more of the platform's businesses. The first is the primary one; each one's default metrics are in the report."
+            >
               {locked ? (
-                <input className="input" disabled value={business?.name ?? existing.data?.business_name ?? ""} />
+                <input className="input" disabled value={(existing.data?.business_names ?? [existing.data?.business_name ?? ""]).join(", ")} />
               ) : (
-                <Combobox
-                  options={businessOptions}
-                  value={businessId ? String(businessId) : ""}
-                  onChange={(v) => setBusinessId(Number(v))}
-                  placeholder={shownPlatform ? "Choose a business" : "Choose a platform first"}
-                />
+                <div className="stack" style={{ gap: 6 }}>
+                  {chosen.length > 0 && (
+                    <div className="chip-row">
+                      {chosen.map((b, i) => (
+                        <span key={b.id} className="chip" title={b.key}>
+                          {b.name}
+                          {i === 0 && chosen.length > 1 && <span className="faint"> · primary</span>}
+                          <button
+                            type="button"
+                            className="chip-x"
+                            aria-label={`Remove ${b.name}`}
+                            onClick={() => {
+                              setBusinessIds(businessIds.filter((x) => x !== b.id));
+                              if (i === 0) setGroupIds([]);
+                            }}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <Combobox
+                    options={businessOptions}
+                    value=""
+                    onChange={(v) => v && setBusinessIds([...businessIds, Number(v)])}
+                    placeholder={!shownPlatform ? "Choose a platform first" : chosen.length ? "Add another business" : "Choose businesses"}
+                  />
+                </div>
               )}
             </Field>
             <Field label="Owner" hint={editing ? undefined : "Whoever creates the experiment owns it."}>
@@ -283,6 +318,9 @@ export default function ExperimentForm() {
                 hint="The experiment gets a layer of its own — no other experiment shares its units, so up to 100% of traffic is available. Manage diversions on the Traffic layers page."
               >
                 <select className="input" disabled={locked} value={autoDiversion} onChange={(e) => setAutoDiversion(e.target.value)}>
+                  <option value="" disabled>
+                    Choose a diversion…
+                  </option>
                   {diversions.map((d) => (
                     <option key={d.key} value={d.key}>
                       {d.name} ({d.key})
@@ -321,6 +359,9 @@ export default function ExperimentForm() {
               }
             >
               <select className="input" disabled={locked} value={layerId} onChange={(e) => setLayerId(Number(e.target.value))}>
+                <option value={0} disabled>
+                  Choose a layer…
+                </option>
                 {refs.data?.layers.map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.name} (by {diversionName(diversions, l.diversion).toLowerCase()}) — {trafficPct(1000 - l.used_buckets)} free
@@ -446,13 +487,65 @@ export default function ExperimentForm() {
 
         <ErrorBox error={error} />
         <div className="row">
-          <button className="btn btn-primary" disabled={saving} onClick={save}>
+          <button className="btn btn-primary" disabled={saving} onClick={check}>
             {saving ? "Saving…" : editing ? "Save changes" : "Create draft"}
           </button>
           <Link className="btn btn-ghost" to={editing ? `/experiments/${id}` : "/experiments"}>
             Cancel
           </Link>
         </div>
+        {confirming && (
+          <Modal
+            wide
+            title={editing ? "Save these changes?" : "Create this draft?"}
+            onClose={() => setConfirming(false)}
+            footer={
+              <>
+                <button className="btn btn-ghost" onClick={() => setConfirming(false)}>
+                  Back to editing
+                </button>
+                <button className="btn btn-primary" onClick={save} autoFocus>
+                  {editing ? "Save changes" : "Create draft"}
+                </button>
+              </>
+            }
+          >
+            <dl className="confirm-list">
+              <dt>Name</dt>
+              <dd>{name}</dd>
+              <dt>Platform</dt>
+              <dd>
+                {platformOptions.find((o) => o.value === platformKey)?.label ?? platformKey} <span className="mono faint">{platformKey}</span>
+              </dd>
+              <dt>Businesses</dt>
+              <dd>{chosen.map((b) => b.name).join(", ") || existing.data?.business_names?.join(", ")}</dd>
+              <dt>Traffic split</dt>
+              <dd>
+                {mode === "auto"
+                  ? `Dedicated layer, split by ${diversionName(diversions, autoDiversion).toLowerCase()}`
+                  : `Layer ${layer?.name ?? ""}, split by ${diversionName(diversions, layer?.diversion ?? "").toLowerCase()}`}
+              </dd>
+              <dt>Traffic</dt>
+              <dd>{trafficPct(traffic)}{mode === "layer" ? " of the layer" : ""}</dd>
+              <dt>Variants</dt>
+              <dd>
+                {variants.map((v, i) => (
+                  <div key={i}>
+                    <b>{v.is_control ? "Control" : `Treatment ${variants.slice(0, i).filter((x) => !x.is_control).length + 1}`}</b> · {v.name || v.key} ·{" "}
+                    {trafficPct(Number(v.weight))}
+                  </div>
+                ))}
+              </dd>
+              <dt>Metric groups</dt>
+              <dd>
+                {groupIds.length
+                  ? groupIds.map((g) => refs.data?.groups.find((x) => x.id === g)?.name ?? g).join(", ")
+                  : "Defaults only (the businesses' and platform's default metrics)"}
+              </dd>
+            </dl>
+            {!editing && <p className="small faint">A draft serves no traffic. Submit it for review, then start it, from its page.</p>}
+          </Modal>
+        )}
       </div>
     </div>
   );

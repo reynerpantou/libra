@@ -52,9 +52,16 @@ export default function Integrate() {
           </p>
           <ul className="small muted" style={{ margin: 0, paddingLeft: 18 }}>
             <li>
-              <b>resolve</b>: <code>platform</code> is required {several ? "(there are several platforms)" : "once you have more than one platform"} — without
-              it, experiments of different apps would mix. <code>business</code> is optional: leave it out to get every experiment of the platform (a
-              whole-app config), or set it to get only that business's.
+              <b>resolve</b>: <code>platform</code> and <code>business</code> each take <code>""</code> or <code>"all"</code> (everything), one key, a
+              comma list (<code>{several ? `"${list.slice(0, 2).map((p) => p.key).join(",")}"` : `"${P},other"`}</code>) or a JSON array (
+              <code>{`["${P}", "…"]`}</code>). Leave both as <code>"all"</code> for a whole-company config, or narrow down to just what the page needs.
+            </li>
+            <li>
+              <b>No collisions between platforms.</b> A business always belongs to its platform, so Libra resolves every business to a{" "}
+              <code>platform/business</code> pair. A bare key such as <code>"{B}"</code> with several platforms selected means{" "}
+              <i>that business on each selected platform that has it</i>; write <code>"{P}/{B}"</code> to pick exactly one. The response lists what was
+              resolved in <code>platforms</code> and <code>businesses</code>, and params stay under each platform's key, so two platforms' <code>{B}</code>{" "}
+              never overwrite each other.
             </li>
             <li>
               <b>events</b>: <code>business</code> is required; add <code>platform</code> when the business key exists on more than one platform.
@@ -103,12 +110,22 @@ export default function Integrate() {
        "attrs": {"region": "ID", "os": "android", "app_version": "10.3.0"}}'
 
 {
+  "user_id": "user-42", "device_id": "dev-9f3a",
+  "platforms": ["${P}"], "businesses": ["${P}/${B}"],
+  "snapshot_version": 12,
   "params": {"${P}": {"search": {"ranking": {"formula": "ctr * cvr * price_score", "price_boost": 0.3}}}},
-  "hits": [{"experiment_id": 1, "experiment": "Ranking formula v2", "variant_id": 2,
-            "variant": "treatment", "source": "experiment", "unit_type": "user_id"}],
-  "platform": "${P}", "business": "${B}",
-  "snapshot_version": 12
+  "variant_ids": [482913057716204],
+  "hits": [{"experiment_id": 730152948816377, "experiment": "Ranking formula v2",
+            "variant_id": 482913057716204, "variant": "treatment",
+            "source": "experiment", "unit_type": "user_id", "unit_id": "user-42"}]
 }`}</pre>
+          <p className="muted small">
+            <code>variant_ids</code> lists every variant the unit got (experiments, whitelists and launches). Experiment and variant ids are random
+            15-digit numbers that never change, so log <code>variant_ids</code> with your own events or pass them to other services: anyone can look a
+            variant up in Libra, and the Debug tools page replays the exact request. Several platforms at once:
+          </p>
+          <pre className="code">{`-d '{"platform": "${several ? list.slice(0, 2).map((p) => p.key).join(",") : P}", "business": "all", "user_id": "user-42"}'
+-d '{"platform": ${JSON.stringify(several ? list.slice(0, 2).map((p) => p.key) : [P])}, "business": "${P}/${B}", "user_id": "user-42"}'`}</pre>
           <p className="muted small">
             Send both <code>user_id</code> and <code>device_id</code> when you have them: each layer splits traffic by one of them (its{" "}
             <i>diversion</i>), and an experiment whose id is missing from the request is skipped.

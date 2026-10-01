@@ -7,13 +7,14 @@ import { ReviewerPicker } from "../components/ReviewerPicker";
 import { RolloutChoice, RolloutStatus, schedule } from "../components/Rollout";
 import ReportView from "../components/ReportView";
 import { TargetingView } from "../components/Targeting";
-import { Empty, ErrorBox, Field, Icon, Loading, Modal, Popover, StatusBadge, Tabs, TrafficBar } from "../components/ui";
+import { Empty, ErrorBox, Field, Icon, Loading, Modal, Popover, StatusBadge, Tabs, TrafficBar, seriesColor } from "../components/ui";
+import { copyText } from "../lib/exportTable";
 import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { actionLabel, fmtDate, fmtDateTime, fmtInt, statusLabel, trafficPct } from "../lib/format";
 import { diversionName, useDiversions } from "../lib/diversions";
 import { useAsync } from "../lib/hooks";
-import type { Experiment, Gradual, Layer, Status } from "../lib/types";
+import type { Experiment, Gradual, Layer, Status, Variant } from "../lib/types";
 
 type Tab = "report" | "overview" | "whitelist" | "history";
 
@@ -106,7 +107,7 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
         </div>
         <p>{e.hypothesis || <span className="faint">No hypothesis written.</span>}</p>
         <div className="row small faint" style={{ marginTop: 6 }}>
-          <span>{e.business_name}</span>·<span>{e.layer_auto ? `dedicated layer (by ${e.layer_diversion})` : `layer ${e.layer_name}`}</span>·<span>owner {e.owner_name || "—"}</span>·
+          <span>{(e.business_names?.length ? e.business_names : [e.business_name]).join(", ")}</span>·<span>{e.layer_auto ? `dedicated layer (by ${e.layer_diversion})` : `layer ${e.layer_name}`}</span>·<span>owner {e.owner_name || "—"}</span>·
           <span>
             {e.status === "active" || e.status === "paused"
               ? `${trafficPct(e.traffic_held)} traffic`
@@ -305,9 +306,14 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
         <section className="card card-pad stack">
           <h2>Setup</h2>
           <dl className="kv">
-            <dt>Business</dt>
+            <dt>{(e.business_ids?.length ?? 1) > 1 ? "Businesses" : "Business"}</dt>
             <dd>
-              <Link to={`/businesses/${e.business_id}`}>{e.business_name}</Link>
+              {(e.business_ids?.length ? e.business_ids : [e.business_id]).map((bid, i) => (
+                <span key={bid}>
+                  {i > 0 && ", "}
+                  <Link to={`/businesses/${bid}`}>{e.business_names?.[i] ?? e.business_name}</Link>
+                </span>
+              ))}
             </dd>
             <dt>Layer</dt>
             <dd>{e.layer_auto ? <span title="A layer of its own: no other experiment shares its traffic">Dedicated (auto)</span> : e.layer_name}</dd>
@@ -383,36 +389,14 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
                 return (
                   <tr key={v.id}>
                     <td style={{ verticalAlign: "top" }}>
-                      <div style={{ fontWeight: 600, wordBreak: "break-word" }}>
-                        {v.name || v.key}{" "}
-                        {v.is_control && <span className="badge">control</span>}{" "}
-                        {e.launched_variant_id === v.id && <span className="badge b-accent">launched</span>}
-                      </div>
-                      <div className="mono faint small" style={{ wordBreak: "break-all" }}>
-                        {v.key} · id {v.id}
-                      </div>
-                      <div className="small" style={{ marginTop: 4 }}>
-                        {trafficPct(v.weight)} <span className="faint">of the experiment's units</span>
-                      </div>
-                      <div className="small" style={{ marginTop: 6 }}>
-                        {wl.length === 0 ? (
-                          <span className="faint">No test {noun}</span>
-                        ) : (
-                          <>
-                            <span className="faint">
-                              {wl.length} test {noun}:
-                            </span>
-                            <div className="chip-row" style={{ marginTop: 3 }}>
-                              {wl.slice(0, 5).map((w) => (
-                                <span key={w.unit_id} className="chip" title={w.note || undefined} style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>
-                                  {w.unit_id}
-                                </span>
-                              ))}
-                              {wl.length > 5 && <Link to="?tab=whitelist">+{wl.length - 5} more</Link>}
-                            </div>
-                          </>
-                        )}
-                      </div>
+                      <VariantCard
+                        e={e}
+                        v={v}
+                        index={(e.variants ?? []).indexOf(v)}
+                        treatmentNo={(e.variants ?? []).filter((x) => !x.is_control).indexOf(v) + 1}
+                        tests={wl.map((w) => w.unit_id)}
+                        noun={noun}
+                      />
                     </td>
                     <td style={{ minWidth: 0 }}>
                       <ParamBox>
@@ -575,6 +559,67 @@ function TrafficPanel({ e, onChange, layer, free }: { e: Experiment; onChange: (
         </>
       )}
     </section>
+  );
+}
+
+// VariantCard: who the variant is (control or treatment N), its share,
+// its id (what services log and report), and its test units.
+function VariantCard({ e, v, index, treatmentNo, tests, noun }: { e: Experiment; v: Variant; index: number; treatmentNo: number; tests: string[]; noun: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="vcard" style={{ borderLeftColor: seriesColor(index) }}>
+      <div className="row" style={{ gap: 6 }}>
+        <span className={`badge ${v.is_control ? "b-neutral" : "b-accent"}`}>{v.is_control ? "Control" : `Treatment ${treatmentNo}`}</span>
+        {e.launched_variant_id === v.id && <span className="badge b-good">Launched</span>}
+      </div>
+      <div className="vcard-name">{v.name || v.key}</div>
+      <div className="vcard-weight">
+        <div className="vcard-bar">
+          <div style={{ width: `${v.weight / 10}%`, background: seriesColor(index) }} />
+        </div>
+        <b>{trafficPct(v.weight)}</b>
+      </div>
+      <dl className="vcard-meta">
+        <dt>Key</dt>
+        <dd className="mono">{v.key}</dd>
+        <dt>Variant id</dt>
+        <dd className="mono">
+          {v.id}{" "}
+          <button
+            className="copy-btn"
+            title="Copy the variant id"
+            onClick={async () => {
+              await copyText(String(v.id));
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }}
+          >
+            {copied ? "✓" : "⧉"}
+          </button>
+        </dd>
+      </dl>
+      {tests.length > 0 ? (
+        <div className="vcard-tests">
+          <Link to="?tab=whitelist" className="badge b-warn" title={`See all test ${noun}`}>
+            {tests.length} test {tests.length === 1 ? noun.replace(/s$/, "") : noun}
+          </Link>
+          <div className="chip-row" style={{ marginTop: 4 }}>
+            {tests.slice(0, 3).map((t) => (
+              <span key={t} className="chip" style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis" }}>
+                {t}
+              </span>
+            ))}
+            {tests.length > 3 && (
+              <Link to="?tab=whitelist" className="small">
+                +{tests.length - 3}
+              </Link>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="small faint">No test {noun}</div>
+      )}
+    </div>
   );
 }
 
