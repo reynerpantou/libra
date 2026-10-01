@@ -177,6 +177,8 @@ export interface ParamValue {
   layer_auto: boolean;
   diversion: string;
   traffic: number;
+  rollout: number;
+  targeted: boolean;
   default: boolean;
 }
 

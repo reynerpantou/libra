@@ -40,7 +40,9 @@ export default function Businesses() {
   const [only, setOnly] = useState<"" | "experiments" | "metrics" | "empty">("");
   const [sort, setSort] = useStored<"name" | "experiments" | "recent">("libra-biz-sort", "name");
   const [view, setView] = useStored<View>("libra-biz-view", "cards");
-  const [collapsed, setCollapsed] = useStored<number[]>("libra-biz-collapsed", []);
+  // Platforms start collapsed (a platform can hold dozens of businesses);
+  // the ones you open are remembered.
+  const [expanded, setExpanded] = useStored<number[]>("libra-biz-expanded", []);
   const platforms = list.data ?? [];
   const query = q.trim().toLowerCase();
   const filtering = !!query || !!only;
@@ -66,8 +68,8 @@ export default function Businesses() {
   );
   const total = platforms.reduce((n, p) => n + p.businesses.length, 0);
   const shownCount = shown.reduce((n, x) => n + x.bs.length, 0);
-  const isCollapsed = (id: number) => !filtering && collapsed.includes(id);
-  const toggle = (id: number) => setCollapsed(collapsed.includes(id) ? collapsed.filter((x) => x !== id) : [...collapsed, id]);
+  const isCollapsed = (id: number) => !filtering && !expanded.includes(id);
+  const toggle = (id: number) => setExpanded(expanded.includes(id) ? expanded.filter((x) => x !== id) : [...expanded, id]);
 
   return (
     <div className="page">
@@ -136,10 +138,10 @@ export default function Businesses() {
               {filtering ? `${shownCount} of ${total}` : total} businesses in {shown.length} platform{shown.length === 1 ? "" : "s"}
             </span>
             <span className="spacer" />
-            <button className="btn btn-ghost btn-sm" onClick={() => setCollapsed([])} disabled={filtering}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setExpanded(platforms.map((p) => p.id))} disabled={filtering}>
               Expand all
             </button>
-            <button className="btn btn-ghost btn-sm" onClick={() => setCollapsed(platforms.map((p) => p.id))} disabled={filtering}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setExpanded([])} disabled={filtering}>
               Collapse all
             </button>
           </div>
@@ -168,7 +170,11 @@ export default function Businesses() {
             const closed = isCollapsed(p.id);
             return (
               <section key={p.id} className="card">
-                <div className="card-head" style={closed ? { borderBottom: 0 } : undefined}>
+                <div
+                  className="card-head"
+                  style={{ ...(closed ? { borderBottom: 0 } : {}), cursor: filtering ? undefined : "pointer" }}
+                  onClick={(e) => !filtering && !(e.target as HTMLElement).closest("a, button") && toggle(p.id)}
+                >
                   <div className="row" style={{ gap: 8, minWidth: 0 }}>
                     <button className="icon-btn" aria-label={closed ? "Expand" : "Collapse"} onClick={() => toggle(p.id)} disabled={filtering}>
                       <span style={{ display: "inline-block", width: 14 }}>{closed ? "▸" : "▾"}</span>

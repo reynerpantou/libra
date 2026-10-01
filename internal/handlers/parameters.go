@@ -25,7 +25,9 @@ type ParamValue struct {
 	Layer        string `json:"layer"`
 	LayerAuto    bool   `json:"layer_auto"`
 	Diversion    string `json:"diversion"`
-	Traffic      int    `json:"traffic"` // per mille of the layer held (running experiments)
+	Traffic      int    `json:"traffic"`  // per mille of the layer held (running experiments)
+	Rollout      int    `json:"rollout"`  // launched: per mille of units it reaches (1000 = everyone)
+	Targeted     bool   `json:"targeted"` // only units matching the experiment's targeting
 	// Default: this launched value is what everyone gets for the path unless
 	// a running experiment overrides it (the most recent launch wins).
 	Default bool `json:"default"`
@@ -47,6 +49,11 @@ func (s *Server) ListParameters(w http.ResponseWriter, r *http.Request) {
 		}
 		if e.Status == assign.StatusActive {
 			pv.Traffic = len(e.Buckets)
+		}
+		pv.Targeted = len(e.Targeting.Groups) > 0
+		pv.Rollout = e.LaunchRollout
+		if pv.Rollout <= 0 {
+			pv.Rollout = assign.Buckets
 		}
 		for _, v := range e.Variants {
 			if e.Status == assign.StatusLaunched && v.ID != e.LaunchedVar {
