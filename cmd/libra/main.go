@@ -120,6 +120,7 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 
 	// People and keys
 	api.Handle("GET /users", viewer(s.ListUsers))
+	api.Handle("GET /users/search", editor(s.SearchUsers))
 	api.Handle("POST /users", admin(s.CreateUser))
 	api.Handle("PUT /users/{id}", admin(s.UpdateUser))
 	api.Handle("DELETE /users/{id}", admin(s.DeleteUser))
@@ -180,6 +181,7 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("DELETE /experiments/{id}/rollouts/{rid}", editor(s.CancelRollout))
 	api.Handle("POST /experiments/{id}/whitelist", editor(s.AddWhitelist))
 	api.Handle("DELETE /experiments/{id}/whitelist/{unit}", editor(s.RemoveWhitelist))
+	api.Handle("POST /experiments/{id}/whitelist/remove", editor(s.RemoveWhitelistMany))
 	api.Handle("GET /experiments/{id}/history", viewer(s.ExperimentHistory))
 	api.Handle("POST /experiments/{id}/clone", editor(s.CloneExperiment))
 	api.Handle("POST /experiments/{id}/reviewers", editor(s.InviteReviewers))

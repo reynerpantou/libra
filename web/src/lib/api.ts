@@ -198,6 +198,8 @@ export const api = {
   addWhitelist: (id: number, unit_ids: string[], variant_id: number, note: string) =>
     request<void>("POST", `/experiments/${id}/whitelist`, { unit_ids, variant_id, note }),
   removeWhitelist: (id: number, unit: string) => request<void>("DELETE", `/experiments/${id}/whitelist/${encodeURIComponent(unit)}`),
+  searchUsers: (q: string, reviewers = true) => request<User[]>("GET", `/users/search${qs({ q, reviewers: reviewers ? "1" : "" })}`),
+  removeWhitelistMany: (id: number, unit_ids: string[]) => request<{ removed: number }>("POST", `/experiments/${id}/whitelist/remove`, { unit_ids }),
   inviteReviewers: (id: number, user_ids: number[]) => request<Experiment>("POST", `/experiments/${id}/reviewers`, { user_ids }),
   history: (id: number) => request<AuditEntry[]>("GET", `/experiments/${id}/history`),
   clone: (id: number) => request<{ id: number }>("POST", `/experiments/${id}/clone`),

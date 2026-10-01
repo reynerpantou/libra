@@ -1108,6 +1108,44 @@ func (s *Server) RemoveWhitelist(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// RemoveWhitelistMany removes several test units at once.
+func (s *Server) RemoveWhitelistMany(w http.ResponseWriter, r *http.Request) {
+	id, _ := pathID(r, "id")
+	var req struct {
+		UnitIDs []string `json:"unit_ids"`
+	}
+	if !decodeOr400(w, r, &req) {
+		return
+	}
+	if len(req.UnitIDs) == 0 || len(req.UnitIDs) > 5000 {
+		badRequest(w, "choose 1 to 5000 test units to remove")
+		return
+	}
+	tx, err := s.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(r.Context(), `DELETE FROM whitelist WHERE experiment_id = $1 AND unit_id = ANY($2::text[])`, id, req.UnitIDs)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	_ = audit(r.Context(), tx, user(r).ID, id, "whitelist", id, "whitelist_remove", "", "", map[string]any{"units": n})
+	if err := serving.Bump(r.Context(), tx); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	s.reload(r.Context())
+	writeJSON(w, http.StatusOK, map[string]int64{"removed": n})
+}
+
 // ---- history & clone ----
 
 type AuditEntry struct {

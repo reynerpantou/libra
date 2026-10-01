@@ -102,11 +102,9 @@ export default function Layers() {
               )}
             </section>
           ))}
-          {paged.pages > 1 && (
-            <div className="card">
-              <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="layers" />
-            </div>
-          )}
+          <div className="card">
+            <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="layers" />
+          </div>
         </div>
       )}
       {open && (
@@ -167,6 +165,10 @@ function Diversions() {
   const list = useDiversions();
   const [editing, setEditing] = useState<DiversionDef | "new" | null>(null);
   const [error, setError] = useState("");
+  const [q, setQ] = useState("");
+  const query = q.trim().toLowerCase();
+  const found = list.filter((d) => !query || [d.key, d.name, d.description].some((x) => x.toLowerCase().includes(query)));
+  const paged = usePaged(found, 10, query);
   return (
     <section className="card" style={{ marginBottom: 16 }}>
       <div className="card-head">
@@ -184,6 +186,9 @@ function Diversions() {
         )}
       </div>
       <ErrorBox error={error} />
+      <div style={{ padding: "10px 16px" }}>
+        <input className="input" style={{ maxWidth: 360 }} placeholder="Search diversions by key, name or description…" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
       <div className="table-wrap">
         <table className="tbl tbl-compact">
           <thead>
@@ -196,7 +201,7 @@ function Diversions() {
             </tr>
           </thead>
           <tbody>
-            {list.map((d) => (
+            {paged.slice.map((d) => (
               <tr key={d.key}>
                 <td style={{ fontWeight: 600 }}>
                   {d.name} {d.builtin && <span className="badge">built in</span>}
@@ -237,7 +242,9 @@ function Diversions() {
             ))}
           </tbody>
         </table>
+        {found.length === 0 && <div className="small faint" style={{ padding: 16 }}>No diversions match.</div>}
       </div>
+      <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="diversions" />
       {editing && <DiversionModal d={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
     </section>
   );

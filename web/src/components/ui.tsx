@@ -118,13 +118,17 @@ export function Segmented<T extends string>({ options, value, onChange }: { opti
   );
 }
 
-export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
+// Field labels one input. With group, it's a plain block instead of a
+// <label>: a label forwards clicks to its first control, which breaks
+// fields holding several buttons (chips, segmented choices).
+export function Field({ label, hint, children, group }: { label: string; hint?: ReactNode; children: ReactNode; group?: boolean }) {
+  const Tag = group ? "div" : "label";
   return (
-    <label className="field">
+    <Tag className="field">
       <span>{label}</span>
       {children}
       {hint && <small>{hint}</small>}
-    </label>
+    </Tag>
   );
 }
 
