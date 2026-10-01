@@ -438,3 +438,7 @@ mark.hit { background: var(--warn-soft); color: inherit; border-radius: 3px; pad
 .gpick-row.on { background: var(--accent-soft); }
 .gpick-row input { margin-top: 3px; }
 .ellipsis { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.variants-tbl { table-layout: fixed; width: 100%; }
+.param-box { max-height: 300px; overflow: auto; border-radius: 8px; }
+.param-box.open { max-height: none; }
+.param-box .ptree { overflow: visible; min-width: max-content; }

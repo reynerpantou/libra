@@ -22,7 +22,7 @@ func (s *Server) Diagnose(w http.ResponseWriter, r *http.Request) {
 	if req.UserID == "" {
 		req.UserID = strings.TrimSpace(req.UnitID)
 	}
-	if msg := checkIDs(req.UserID, req.DeviceID, req.IDs); msg != "" {
+	if msg := checkIDs(req.UserID, req.DeviceID, req.IDs, false); msg != "" {
 		badRequest(w, msg)
 		return
 	}

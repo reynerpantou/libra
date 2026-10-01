@@ -220,7 +220,7 @@ function Live({ platform, business, picker }: { platform: string; business: stri
                   <th>Value</th>
                   <th>Experiment</th>
                   <th>Variant</th>
-                  <th>Layer</th>
+                  <th>Reach</th>
                 </tr>
               </thead>
               <tbody>
@@ -276,8 +276,23 @@ function ValueCells({ v }: { v: ParamValue }) {
         {v.variant_name || v.variant_key} {v.is_control && <span className="badge">control</span>}
       </td>
       <td className="small nowrap">
-        {v.layer_auto ? "dedicated" : v.layer} <span className="faint">· {v.diversion}</span>
-        {v.status === "active" && <div className="faint">{trafficPct(v.traffic)} traffic</div>}
+        {v.status === "launched" ? (
+          // A launch isn't tied to its layer: it applies to everyone (who
+          // matches its targeting), whatever ids they have.
+          v.rollout < 1000 ? (
+            <>
+              {trafficPct(v.rollout)} rolling out <span className="faint">· by {v.diversion}</span>
+              {v.targeted && <div className="faint">targeted units only</div>}
+            </>
+          ) : (
+            <span title="Applies to every unit, whatever its user id, device id or other ids">{v.targeted ? "Everyone targeted" : "Everyone"}</span>
+          )
+        ) : (
+          <>
+            {trafficPct(v.traffic)} of {v.layer_auto ? "its own layer" : `layer ${v.layer}`}
+            <div className="faint">split by {v.diversion}{v.targeted ? " · targeted" : ""}</div>
+          </>
+        )}
       </td>
     </>
   );

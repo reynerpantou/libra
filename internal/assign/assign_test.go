@@ -337,3 +337,17 @@ func TestPlatformScope(t *testing.T) {
 		t.Errorf("platform filter: %+v", r.Hits)
 	}
 }
+
+// A fully launched variant applies to every unit that passes targeting,
+// whatever ids the request carries (or none), and whatever its layer
+// splits by.
+func TestLaunchAppliesToEveryone(t *testing.T) {
+	e := &Experiment{ID: 1, LayerID: 1, Name: "launch", PlatformKey: "p", BusinessKey: "b", Status: StatusLaunched, Salt: "L", LaunchedVar: 2, LaunchRollout: 1000, Variants: twoVariants()}
+	s := NewSnapshot(1, []*Layer{{ID: 1, Salt: "1", Diversion: "shop_id"}}, []*Experiment{e})
+	for _, req := range []Request{{}, {UserID: "u1"}, {DeviceID: "d1"}, {IDs: map[string]string{"other": "x"}}} {
+		r := s.Resolve(req, false)
+		if len(r.Hits) != 1 || r.Hits[0].Source != SourceLaunch {
+			t.Errorf("request %+v: hits %+v", req, r.Hits)
+		}
+	}
+}

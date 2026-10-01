@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Combobox } from "../components/Combobox";
+import { Pager, usePaged } from "../components/Pager";
+import { copyText } from "../lib/exportTable";
 import { ErrorBox, Field, Icon, Loading, StatusBadge, Tabs } from "../components/ui";
 import { api } from "../lib/api";
 import { useDiversions } from "../lib/diversions";
@@ -170,45 +172,110 @@ function Diagnose() {
       </section>
       <div className="stack">
         {busy && <Loading />}
-        {res && (
-          <>
-            <section className="card">
-              <div className="card-head">
-                <h2>Decision per experiment</h2>
-                <span className="faint small">config version {res.version}</span>
-              </div>
-              <table className="tbl">
-                <tbody>
-                  {res.trace.map((s) => {
-                    const [label, cls] = outcomeText[s.outcome] ?? [s.outcome, ""];
-                    return (
-                      <tr key={s.experiment_id}>
-                        <td>
-                          <Link to={`/experiments/${s.experiment_id}`}>{s.experiment}</Link>
-                          <div className="row small faint" style={{ gap: 6 }}>
-                            <StatusBadge status={s.status} /> {s.platform} › {s.business}
-                          </div>
-                        </td>
-                        <td>
-                          <span className={`badge ${cls}`}>{label}</span>
-                          <div className="small muted" style={{ marginTop: 4 }}>
-                            {s.detail}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </section>
-            <section className="card card-pad stack-sm">
-              <h2>Parameters served</h2>
-              <pre className="code">{JSON.stringify(res.params, null, 2)}</pre>
-            </section>
-          </>
-        )}
+        {res && <DiagnoseResult res={res} />}
       </div>
     </div>
+  );
+}
+
+const APPLIED = new Set(["assigned", "whitelisted", "launched"]);
+
+// DiagnoseResult: the merged parameters first (what the unit actually
+// gets), then every experiment's decision — searchable, filterable by
+// outcome and paged, so it stays usable with thousands of experiments.
+function DiagnoseResult({ res }: { res: { version: number; hits: Hit[]; params: Record<string, unknown>; trace: Step[] } }) {
+  const [q, setQ] = useState("");
+  const [outcome, setOutcome] = useState<string>("applied");
+  const [tall, setTall] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const counts = new Map<string, number>();
+  for (const s of res.trace) counts.set(s.outcome, (counts.get(s.outcome) ?? 0) + 1);
+  const applied = res.trace.filter((s) => APPLIED.has(s.outcome)).length;
+  const query = q.trim().toLowerCase();
+  const found = res.trace
+    .filter((s) => (outcome === "all" ? true : outcome === "applied" ? APPLIED.has(s.outcome) : outcome === "not_applied" ? !APPLIED.has(s.outcome) : s.outcome === outcome))
+    .filter((s) => !query || [s.experiment, String(s.experiment_id), s.platform, s.business, s.detail].some((x) => x.toLowerCase().includes(query)))
+    .sort((a, b) => Number(APPLIED.has(b.outcome)) - Number(APPLIED.has(a.outcome)));
+  const paged = usePaged(found, 20, `${query}|${outcome}`);
+  const json = JSON.stringify(res.params, null, 2);
+  return (
+    <>
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <h2>Parameters served</h2>
+            <p>
+              Merged from {applied} experiment{applied === 1 ? "" : "s"}: {counts.get("assigned") ?? 0} in traffic, {counts.get("whitelisted") ?? 0} whitelisted,{" "}
+              {counts.get("launched") ?? 0} launched · config version {res.version}
+            </p>
+          </div>
+          <div className="row" style={{ gap: 6 }}>
+            <button
+              className="btn btn-sm"
+              onClick={async () => {
+                await copyText(json);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              }}
+            >
+              {copied ? "Copied ✓" : "Copy JSON"}
+            </button>
+            <button className="btn btn-sm" onClick={() => setTall(!tall)}>
+              {tall ? "Shrink" : "Expand"}
+            </button>
+          </div>
+        </div>
+        <div className="card-pad">
+          <pre className="code" style={{ maxHeight: tall ? "none" : 320, overflow: "auto", margin: 0 }}>
+            {json}
+          </pre>
+        </div>
+      </section>
+      <section className="card">
+        <div className="card-head">
+          <h2>Decision per experiment</h2>
+          <span className="faint small">{res.trace.length} checked</span>
+        </div>
+        <div className="row" style={{ gap: 8, padding: "10px 16px" }}>
+          <input className="input" style={{ flex: 1, minWidth: 180 }} placeholder="Search experiment, id, business or reason…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <select className="input" style={{ width: 230 }} value={outcome} onChange={(e) => setOutcome(e.target.value)} aria-label="Outcome">
+            <option value="applied">Applied to this unit ({applied})</option>
+            <option value="not_applied">Not applied ({res.trace.length - applied})</option>
+            <option value="all">All ({res.trace.length})</option>
+            {Array.from(counts.entries()).map(([k, n]) => (
+              <option key={k} value={k}>
+                {(outcomeText[k] ?? [k])[0]} ({n})
+              </option>
+            ))}
+          </select>
+        </div>
+        <table className="tbl">
+          <tbody>
+            {paged.slice.map((s) => {
+              const [label, cls] = outcomeText[s.outcome] ?? [s.outcome, ""];
+              return (
+                <tr key={s.experiment_id}>
+                  <td>
+                    <Link to={`/experiments/${s.experiment_id}`}>{s.experiment}</Link>
+                    <div className="row small faint" style={{ gap: 6 }}>
+                      <StatusBadge status={s.status} /> {s.platform} › {s.business}
+                    </div>
+                  </td>
+                  <td>
+                    <span className={`badge ${cls}`}>{label}</span>
+                    <div className="small muted" style={{ marginTop: 4 }}>
+                      {s.detail}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {found.length === 0 && <div className="small faint" style={{ padding: 16 }}>No experiments match.</div>}
+        <Pager page={paged.page} pages={paged.pages} total={paged.total} size={paged.size} onPage={paged.setPage} onSize={paged.setSize} noun="experiments" />
+      </section>
+    </>
   );
 }
 

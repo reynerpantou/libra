@@ -54,7 +54,7 @@ func (s *Server) Resolve(w http.ResponseWriter, r *http.Request) {
 	if req.UserID == "" {
 		req.UserID = strings.TrimSpace(req.UnitID)
 	}
-	if msg := checkIDs(req.UserID, req.DeviceID, req.IDs); msg != "" {
+	if msg := checkIDs(req.UserID, req.DeviceID, req.IDs, false); msg != "" {
 		badRequest(w, msg)
 		return
 	}
@@ -198,8 +198,8 @@ func (s *Server) IngestEvents(w http.ResponseWriter, r *http.Request) {
 		case name == "" || len(name) > 120:
 			rejected = append(rejected, map[string]any{"index": i, "error": "event is required"})
 			continue
-		case checkIDs(unit, device, x.IDs) != "":
-			rejected = append(rejected, map[string]any{"index": i, "error": checkIDs(unit, device, x.IDs)})
+		case checkIDs(unit, device, x.IDs, true) != "":
+			rejected = append(rejected, map[string]any{"index": i, "error": checkIDs(unit, device, x.IDs, true)})
 			continue
 		case len(props) > 0 && (json.Unmarshal(props, &obj) != nil || obj == nil):
 			rejected = append(rejected, map[string]any{"index": i, "error": "props must be a JSON object"})
@@ -291,8 +291,10 @@ func (s *Server) businessID(ctx context.Context, platform, key string) (int64, s
 	return 0, "business " + key + " exists on several platforms; send platform too", nil
 }
 
-// checkIDs validates a request's ids: at least one, each reasonably short.
-func checkIDs(user, device string, ids map[string]string) string {
+// checkIDs validates a request's ids. requireOne: events and exposures
+// belong to a unit; resolve doesn't need one — without ids it returns just
+// the launched config, which applies to everyone.
+func checkIDs(user, device string, ids map[string]string, requireOne bool) string {
 	if len(ids) > 10 {
 		return "at most 10 extra ids"
 	}
@@ -305,7 +307,7 @@ func checkIDs(user, device string, ids map[string]string) string {
 			any = true
 		}
 	}
-	if !any {
+	if !any && requireOne {
 		return "send user_id, device_id, or another id in ids"
 	}
 	if len(user) > 200 || len(device) > 200 {

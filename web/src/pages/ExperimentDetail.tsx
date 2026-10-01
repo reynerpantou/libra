@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { LineChart } from "../components/LineChart";
 import { ParamTree, UsagePanel } from "../components/ParamTree";
@@ -363,38 +363,70 @@ function Overview({ e, onChange }: { e: Experiment; onChange: (e: Experiment) =>
           </div>
         </div>
         <div className="table-wrap">
-          <table className="tbl">
+          {/* Fixed layout: the variant column stays narrow and the JSON gets
+              the rest, scrolling inside its own box when long or wide. */}
+          <table className="tbl variants-tbl">
+            <colgroup>
+              <col style={{ width: 240 }} />
+              <col />
+            </colgroup>
             <thead>
               <tr>
                 <th>Variant</th>
-                <th className="num">Weight</th>
                 <th>Parameters served</th>
               </tr>
             </thead>
             <tbody>
-              {e.variants?.map((v) => (
-                <tr key={v.id}>
-                  <td>
-                    <div style={{ fontWeight: 600 }}>
-                      {v.name || v.key}{" "}
-                      {v.is_control && <span className="badge">control</span>}{" "}
-                      {e.launched_variant_id === v.id && <span className="badge b-accent">launched</span>}
-                    </div>
-                    <div className="mono faint">
-                      {v.key} · id {v.id}
-                    </div>
-                  </td>
-                  <td className="num">{trafficPct(v.weight)}</td>
-                  <td>
-                    <ParamTree
-                      value={v.params}
-                      usage={usage.data?.paths ?? null}
-                      selected={sel?.anchor.isConnected ? sel.path : ""}
-                      onSelect={(p, anchor) => setSel(sel?.anchor === anchor ? null : { path: p, anchor })}
-                    />
-                  </td>
-                </tr>
-              ))}
+              {e.variants?.map((v) => {
+                const wl = (e.whitelist ?? []).filter((w) => w.variant_id === v.id);
+                const noun = unitNoun(e.layer_diversion, diversionName(diversions, e.layer_diversion));
+                return (
+                  <tr key={v.id}>
+                    <td style={{ verticalAlign: "top" }}>
+                      <div style={{ fontWeight: 600, wordBreak: "break-word" }}>
+                        {v.name || v.key}{" "}
+                        {v.is_control && <span className="badge">control</span>}{" "}
+                        {e.launched_variant_id === v.id && <span className="badge b-accent">launched</span>}
+                      </div>
+                      <div className="mono faint small" style={{ wordBreak: "break-all" }}>
+                        {v.key} · id {v.id}
+                      </div>
+                      <div className="small" style={{ marginTop: 4 }}>
+                        {trafficPct(v.weight)} <span className="faint">of the experiment's units</span>
+                      </div>
+                      <div className="small" style={{ marginTop: 6 }}>
+                        {wl.length === 0 ? (
+                          <span className="faint">No test {noun}</span>
+                        ) : (
+                          <>
+                            <span className="faint">
+                              {wl.length} test {noun}:
+                            </span>
+                            <div className="chip-row" style={{ marginTop: 3 }}>
+                              {wl.slice(0, 5).map((w) => (
+                                <span key={w.unit_id} className="chip" title={w.note || undefined} style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>
+                                  {w.unit_id}
+                                </span>
+                              ))}
+                              {wl.length > 5 && <Link to="?tab=whitelist">+{wl.length - 5} more</Link>}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                    <td style={{ minWidth: 0 }}>
+                      <ParamBox>
+                        <ParamTree
+                          value={v.params}
+                          usage={usage.data?.paths ?? null}
+                          selected={sel?.anchor.isConnected ? sel.path : ""}
+                          onSelect={(p, anchor) => setSel(sel?.anchor === anchor ? null : { path: p, anchor })}
+                        />
+                      </ParamBox>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -543,6 +575,30 @@ function TrafficPanel({ e, onChange, layer, free }: { e: Experiment; onChange: (
         </>
       )}
     </section>
+  );
+}
+
+// ParamBox caps a variant's JSON at a readable height; long or wide
+// configs scroll inside it, and Expand shows the whole thing.
+function ParamBox({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const [tall, setTall] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (el) setTall(el.scrollHeight > el.clientHeight + 4);
+  });
+  return (
+    <div>
+      <div ref={ref} className={`param-box ${open ? "open" : ""}`}>
+        {children}
+      </div>
+      {(tall || open) && (
+        <button className="btn btn-ghost btn-sm" onClick={() => setOpen(!open)} style={{ marginTop: 4 }}>
+          {open ? "Show less" : "Show all"}
+        </button>
+      )}
+    </div>
   );
 }
 
