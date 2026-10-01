@@ -347,8 +347,13 @@ export function PlatformModal({ platform, onClose, onSaved }: { platform?: Platf
   const [error, setError] = useState("");
   const save = async () => {
     try {
-      const p = platform ? await api.updatePlatform(platform.id, { key, name, description }) : await api.createPlatform({ key, name, description });
-      onSaved(p.id);
+      // Updating answers 204 (no body); keep the id we already have.
+      if (platform) {
+        await api.updatePlatform(platform.id, { key, name, description });
+        onSaved(platform.id);
+      } else {
+        onSaved((await api.createPlatform({ key, name, description })).id);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
