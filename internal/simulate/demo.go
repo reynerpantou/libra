@@ -117,6 +117,22 @@ func applyExtras(ctx context.Context, tx *sql.Tx, id int64, name string, owner a
 		}
 		return err
 	}
+	// event audits a lifecycle step by a demo user; the audit trail turns it
+	// into notifications (owner, reviewers).
+	event := func(action, by string, detail string) error {
+		var actor any
+		if uid, ok := users[by]; ok {
+			actor = uid
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO audit_log (experiment_id, entity, entity_id, actor_id, action, detail) VALUES ($1, 'experiment', $1, $2, $3, $4)`,
+			id, actor, action, detail)
+		return err
+	}
+	schedule := func(start, end *time.Time) error {
+		_, err := tx.ExecContext(ctx, `UPDATE experiments SET planned_start = $2, end_at = $3 WHERE id = $1`, id, start, end)
+		return err
+	}
+	at := func(d time.Duration) *time.Time { t := time.Now().UTC().Add(d); return &t }
 	ownedBy := func(user string) error {
 		if uid, ok := users[user]; ok {
 			_, err := tx.ExecContext(ctx, `UPDATE experiments SET owner_id = $2 WHERE id = $1`, id, uid)
@@ -126,6 +142,10 @@ func applyExtras(ctx context.Context, tx *sql.Tx, id int64, name string, owner a
 	}
 	switch name {
 	case "Ranking formula v2":
+		// Ends within a day: its owner gets the "ends soon" reminder.
+		if err := schedule(nil, at(20*time.Hour)); err != nil {
+			return err
+		}
 		return whitelist([3]string{"demo-search-000001", "treatment", "QA phone — always the price boost"}, [3]string{"demo-search-000002", "control", "QA phone — always control"})
 	case "Result card layout":
 		return whitelist([3]string{"dev-search-000010", "video", "Design review device"}, [3]string{"dev-search-000011", "grid_3", "Design review device"})
@@ -136,24 +156,47 @@ func applyExtras(ctx context.Context, tx *sql.Tx, id int64, name string, owner a
 		if err := review("dina", "", ""); err != nil {
 			return err
 		}
-		return review("bob", "", "")
+		if err := review("bob", "", ""); err != nil {
+			return err
+		}
+		if err := schedule(at(4*24*time.Hour), at(18*24*time.Hour)); err != nil {
+			return err
+		}
+		return event("submit", "alice", `{"reviewers": ["Dina Pratama", "Bob Santoso"]}`)
 	case "Image search":
 		if err := ownedBy("evan"); err != nil {
 			return err
 		}
-		return review("bob", "approved", "Looks good — start at 10% and watch latency.")
+		if err := review("bob", "approved", "Looks good — start at 10% and watch latency."); err != nil {
+			return err
+		}
+		// Approved and past its planned start: "time to start".
+		if err := schedule(at(-20*time.Hour), at(14*24*time.Hour)); err != nil {
+			return err
+		}
+		return event("approve", "bob", `{"note": "Looks good — start at 10% and watch latency."}`)
 	case "Infinite scroll":
 		if err := ownedBy("alice"); err != nil {
 			return err
 		}
-		return review("bob", "rejected", "Clashes with ads pagination. Split the ads change into its own test first.")
+		if err := review("bob", "rejected", "Clashes with ads pagination. Split the ads change into its own test first."); err != nil {
+			return err
+		}
+		return event("reject", "bob", `{"note": "Clashes with ads pagination. Split the ads change into its own test first."}`)
 	case "Spelling correction":
 		return ownedBy("dina")
 	case "Unified ranking signals":
 		_, err := tx.ExecContext(ctx, `UPDATE experiments SET business_ids = ARRAY[$2::bigint, $3::bigint] WHERE id = $1`, id, bids["search"], bids["reco"])
 		return err
 	case "Seller coupon nudge":
-		return ownedBy("evan")
+		if err := ownedBy("evan"); err != nil {
+			return err
+		}
+		return schedule(at(3*24*time.Hour), at(31*24*time.Hour))
+	case "Ads slot position", "Feed model two-tower":
+		return schedule(nil, at(10*24*time.Hour))
+	case "Price badge on feed cards":
+		return event("launch", "bob", `{"variant": "badge", "rollout": "30.0%"}`)
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import { asset } from "../lib/api";
 import { useAuth, useCan } from "../lib/auth";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { Icon } from "./ui";
+import { Bell } from "./Notifications";
 
 function useTheme(): [string, () => void] {
   const [theme, setTheme] = useState<string>(() => {
@@ -46,22 +47,23 @@ export default function Layout() {
           <img src={asset("icon.svg")} alt="" />
           Libra
         </div>
+        <Bell />
         <button className="icon-btn" onClick={() => setOpen(!open)} aria-label="Menu">
           <Icon name="menu" size={22} />
         </button>
       </div>
       <aside className={`sidebar ${open ? "open" : ""}`}>
-        <div className="brand">
-          <img src={asset("icon.svg")} alt="" />
-          Libra
+        <div className="brand-row">
+          <div className="brand">
+            <img src={asset("icon.svg")} alt="" />
+            Libra
+          </div>
+          <Bell />
         </div>
         <nav className="nav">
           <div className="nav-label">AB Test</div>
           <NavLink to="/experiments">
             <Icon name="flask" /> Experiments
-          </NavLink>
-          <NavLink to="/parameters">
-            <Icon name="search" /> Parameters
           </NavLink>
           <div className="nav-label">AB Tuning</div>
           <NavLink to="/tuning">
@@ -72,6 +74,9 @@ export default function Layout() {
             <Icon name="building" /> Businesses & metrics
           </NavLink>
           <div className="nav-label">Configuration</div>
+          <NavLink to="/parameters">
+            <Icon name="search" /> Parameters
+          </NavLink>
           <NavLink to="/layers">
             <Icon name="layers" /> Traffic layers
           </NavLink>

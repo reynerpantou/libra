@@ -5,6 +5,7 @@ import { ParamTree, UsagePanel } from "../components/ParamTree";
 import { Pager, usePaged } from "../components/Pager";
 import { ReviewerPicker } from "../components/ReviewerPicker";
 import { RolloutChoice, RolloutStatus, schedule } from "../components/Rollout";
+import { fmtWhen, fromLocalInput, relative, toLocalInput } from "../components/Schedule";
 import ReportView from "../components/ReportView";
 import { TargetingView } from "../components/Targeting";
 import { Empty, ErrorBox, Field, Icon, Loading, Modal, Popover, StatusBadge, Tabs, TrafficBar, seriesColor } from "../components/ui";
@@ -52,6 +53,74 @@ export default function ExperimentDetail() {
       {tab === "whitelist" && <Whitelist e={e} reload={exp.reload} />}
       {tab === "history" && <History id={e.id} version={e.updated_at} />}
     </div>
+  );
+}
+
+// ExtendButton changes (or clears) an AB test's end date.
+export function ExtendButton({ e, onChange, small }: { e: Experiment; onChange: (e: Experiment) => void; small?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [end, setEnd] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const base = e.end_at && new Date(e.end_at).getTime() > Date.now() ? new Date(e.end_at).getTime() : Date.now();
+  const save = async (value: string | null) => {
+    setBusy(true);
+    setError("");
+    try {
+      onChange(await api.extend(e.id, { end_at: value }));
+      setOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <button
+        className={`btn ${small ? "btn-sm" : ""}`}
+        onClick={() => {
+          setEnd(new Date(base + 7 * 86400000).toISOString());
+          setOpen(true);
+        }}
+      >
+        {e.end_at ? "Extend" : "Set end date"}
+      </button>
+      {open && (
+        <Modal
+          title={e.end_at ? "Extend the experiment" : "Set an end date"}
+          onClose={() => setOpen(false)}
+          footer={
+            <>
+              {e.end_at && (
+                <button className="btn btn-ghost" disabled={busy} onClick={() => save(null)}>
+                  Remove end date
+                </button>
+              )}
+              <button className="btn" onClick={() => setOpen(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" disabled={busy || !end} onClick={() => save(end)}>
+                Save
+              </button>
+            </>
+          }
+        >
+          <p className="muted small">
+            {e.end_at ? <>Now ends {fmtWhen(e.end_at)}. </> : null}It stops on the end date: traffic is released and the report freezes. You're notified a day before.
+          </p>
+          <div className="row" style={{ gap: 6 }}>
+            <input className="input" style={{ flex: 1 }} type="datetime-local" value={toLocalInput(end)} onChange={(x) => setEnd(fromLocalInput(x.target.value))} />
+            {[3, 7, 14, 28].map((n) => (
+              <button key={n} className="btn btn-sm" onClick={() => setEnd(new Date(base + n * 86400000).toISOString())}>
+                +{n}d
+              </button>
+            ))}
+          </div>
+          <ErrorBox error={error} />
+        </Modal>
+      )}
+    </>
   );
 }
 
@@ -136,7 +205,25 @@ export function Header({
               : `target ${trafficPct(e.traffic_target)}`}
           </span>
           {e.started_at && <>·<span>started {fmtDate(e.started_at)}</span></>}
+          {!e.started_at && e.planned_start && (
+            <>
+              ·<span title={fmtWhen(e.planned_start)}>planned start {relative(e.planned_start)}</span>
+            </>
+          )}
+          {e.end_at && !["stopped", "launched", "archived"].includes(e.status) && (
+            <>
+              ·<span title={fmtWhen(e.end_at)}>ends {fmtWhen(e.end_at)} ({relative(e.end_at)})</span>
+            </>
+          )}
         </div>
+        {e.kind === "ab" && e.end_at && ["active", "paused"].includes(e.status) && new Date(e.end_at).getTime() - Date.now() < 86400000 && (
+          <div className="alert alert-warn small row-between" style={{ marginTop: 10, gap: 10 }}>
+            <span>
+              Ends {relative(e.end_at)} — it stops then (traffic released, report frozen) unless you extend it.
+            </span>
+            {canEdit && <ExtendButton e={e} onChange={onChange} small />}
+          </div>
+        )}
         {e.status === "rejected" && e.review_note && (
           <div className="alert alert-bad small" style={{ marginTop: 10 }}>
             Rejected by {e.reviewer_name}: {e.review_note}
@@ -192,6 +279,7 @@ export function Header({
               <Icon name="edit" /> Edit
             </Link>
           )}
+          {e.kind === "ab" && !["stopped", "launched", "archived"].includes(e.status) && <ExtendButton e={e} onChange={onChange} />}
           {canClone && (
             <button
               className="btn"

@@ -73,6 +73,7 @@ func serve(db *sql.DB, cfg config.Config) {
 	s := handlers.New(db, cfg, store, logger, sched)
 	go s.RolloutLoop(ctx, 30*time.Second)
 	go s.TuningLoop(ctx, time.Minute)
+	go s.ScheduleLoop(ctx, time.Minute)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           routes(s, db, cfg),
@@ -185,6 +186,10 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("POST /experiments/{id}/whitelist/remove", editor(s.RemoveWhitelistMany))
 	api.Handle("GET /experiments/{id}/history", viewer(s.ExperimentHistory))
 	api.Handle("POST /experiments/{id}/clone", editor(s.CloneExperiment))
+	api.Handle("POST /experiments/{id}/extend", editor(s.ExtendExperiment))
+	api.Handle("GET /notifications", viewer(s.ListNotifications))
+	api.Handle("GET /notifications/unread", viewer(s.UnreadNotifications))
+	api.Handle("POST /notifications/read", viewer(s.ReadNotifications))
 	api.Handle("POST /experiments/{id}/reviewers", editor(s.InviteReviewers))
 	api.Handle("GET /experiments/{id}/report", viewer(s.ExperimentReport))
 	api.Handle("GET /experiments/{id}/trend", viewer(s.ExperimentTrend))

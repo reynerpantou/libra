@@ -175,6 +175,7 @@ func (s *Server) prepareTuning(ctx context.Context, req *tuningRequest, self int
 	if msg := s.validateTuning(ctx, &req.Tuning); msg != "" {
 		return "", msg
 	}
+	req.EndAt = nil // a study ends after its rounds; extending adds rounds
 	if req.BusinessID == 0 && len(req.BusinessIDs) > 0 {
 		req.BusinessID = req.BusinessIDs[0]
 	}
@@ -311,8 +312,8 @@ func (s *Server) UpdateTuning(w http.ResponseWriter, r *http.Request) {
 	// An approved study needs another review after a change.
 	if _, err := tx.ExecContext(r.Context(), `
 		UPDATE experiments SET name = $2, hypothesis = $3, description = $4, traffic_target = $5, targeting = $6, metric_group_ids = $7,
-			status = 'draft', review_note = '', updated_at = now()
-		WHERE id = $1`, id, req.Name, req.Hypothesis, req.Description, req.TrafficTarget, targeting, req.MetricGroupIDs); err != nil {
+			status = 'draft', review_note = '', planned_start = $8, updated_at = now()
+		WHERE id = $1`, id, req.Name, req.Hypothesis, req.Description, req.TrafficTarget, targeting, req.MetricGroupIDs, req.PlannedStart); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -486,6 +487,10 @@ func (s *Server) ListTunings(w http.ResponseWriter, r *http.Request) {
 		args = append(args, p)
 		where = append(where, fmt.Sprintf("(p.key = $%d OR p.id::text = $%d)", len(args), len(args)))
 	}
+	if b := q.Get("business"); b != "" {
+		args = append(args, b)
+		where = append(where, fmt.Sprintf("EXISTS (SELECT 1 FROM businesses fb WHERE fb.id = ANY(e.business_ids || e.business_id) AND (fb.key = $%d OR fb.id::text = $%d))", len(args), len(args)))
+	}
 	if st := q.Get("status"); st != "" {
 		args = append(args, strings.Split(st, ","))
 		where = append(where, fmt.Sprintf("e.status = ANY($%d::text[])", len(args)))
@@ -496,6 +501,7 @@ func (s *Server) ListTunings(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "%"+strings.ToLower(text)+"%")
 		where = append(where, fmt.Sprintf("(lower(e.name) LIKE $%d OR e.id::text LIKE $%d)", len(args), len(args)))
 	}
+	where, args = peopleFilters(q, user(r).ID, where, args)
 	page, size := 1, 25
 	fmt.Sscan(q.Get("page"), &page)
 	fmt.Sscan(q.Get("size"), &size)

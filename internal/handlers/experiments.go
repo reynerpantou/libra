@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"sort"
@@ -201,6 +202,8 @@ type Experiment struct {
 	ReviewerName      string           `json:"reviewer_name"`
 	LaunchedVariantID *int64           `json:"launched_variant_id"`
 	LaunchRollout     int              `json:"launch_rollout"` // per mille of units the launched variant serves
+	PlannedStart      *time.Time       `json:"planned_start"`  // a reminder to start, not an automatic start
+	EndAt             *time.Time       `json:"end_at"`         // stopped then, unless extended
 	StartedAt         *time.Time       `json:"started_at"`
 	EndedAt           *time.Time       `json:"ended_at"`
 	LaunchedAt        *time.Time       `json:"launched_at"`
@@ -219,7 +222,7 @@ const experimentSelect = `
 	       p.id, p.key, p.name, e.layer_id, l.name, l.diversion, l.auto, e.name, e.hypothesis, e.description,
 	       e.owner_id, COALESCE(NULLIF(o.display_name, ''), o.username, ''), e.status, e.traffic_target, cardinality(e.buckets),
 	       e.targeting, array_to_string(e.metric_group_ids, ','), e.review_note, COALESCE(NULLIF(rv.display_name, ''), rv.username, ''),
-	       e.launched_variant_id, e.launch_rollout, e.started_at, e.ended_at, e.launched_at, e.created_at, e.updated_at,
+	       e.launched_variant_id, e.launch_rollout, e.planned_start, e.end_at, e.started_at, e.ended_at, e.launched_at, e.created_at, e.updated_at,
 	       (SELECT count(*) FROM assignments a WHERE a.experiment_id = e.id)
 	FROM experiments e
 	JOIN businesses b ON b.id = e.business_id
@@ -236,7 +239,7 @@ func scanExperiment(sc interface{ Scan(...any) error }) (Experiment, error) {
 	err := sc.Scan(&e.ID, &e.Kind, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &bids, &bnames, &e.PlatformID, &e.PlatformKey, &e.PlatformName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.LayerAuto, &e.Name, &e.Hypothesis, &e.Description,
 		&e.OwnerID, &e.OwnerName, &e.Status, &e.TrafficTarget, &e.TrafficHeld,
 		&targeting, &groups, &e.ReviewNote, &e.ReviewerName,
-		&e.LaunchedVariantID, &e.LaunchRollout, &e.StartedAt, &e.EndedAt, &e.LaunchedAt, &e.CreatedAt, &e.UpdatedAt, &e.Units)
+		&e.LaunchedVariantID, &e.LaunchRollout, &e.PlannedStart, &e.EndAt, &e.StartedAt, &e.EndedAt, &e.LaunchedAt, &e.CreatedAt, &e.UpdatedAt, &e.Units)
 	if err != nil {
 		return e, err
 	}
@@ -285,10 +288,7 @@ func (s *Server) ListExperiments(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "%"+strings.ToLower(text)+"%")
 		where = append(where, fmt.Sprintf("(lower(e.name) LIKE $%d OR lower(e.hypothesis) LIKE $%d OR e.id::text LIKE $%d)", len(args), len(args), len(args)))
 	}
-	if q.Get("mine") == "1" {
-		args = append(args, user(r).ID)
-		where = append(where, fmt.Sprintf("e.owner_id = $%d", len(args)))
-	}
+	where, args = peopleFilters(q, user(r).ID, where, args)
 	// With page, the response is one page plus the total: {items, total}.
 	// Without, the most recent 500 (older clients).
 	cond := strings.Join(where, " AND ")
@@ -413,6 +413,10 @@ type experimentRequest struct {
 	// splitting by this diversion instead of a shared LayerID.
 	AutoDiversion string      `json:"auto_diversion,omitempty"`
 	Variants      []VariantIn `json:"variants"`
+	// Schedule: a planned start (a reminder) and an end (it's stopped then
+	// unless extended). Both optional.
+	PlannedStart *time.Time `json:"planned_start"`
+	EndAt        *time.Time `json:"end_at"`
 }
 
 var variantKey = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
@@ -450,6 +454,9 @@ func (req *experimentRequest) validate() string {
 	}
 	if req.TrafficTarget < 0 || req.TrafficTarget > assign.Buckets {
 		return "traffic must be between 0% and 100%"
+	}
+	if req.EndAt != nil && req.PlannedStart != nil && !req.EndAt.After(*req.PlannedStart) {
+		return "the end date must be after the planned start"
 	}
 	if err := assign.ValidateTargeting(req.Targeting, nil); err != nil {
 		return err.Error()
@@ -493,6 +500,10 @@ func (req *experimentRequest) validate() string {
 func (s *Server) CreateExperiment(w http.ResponseWriter, r *http.Request) {
 	var req experimentRequest
 	if !decodeOr400(w, r, &req) {
+		return
+	}
+	if req.EndAt != nil && !req.EndAt.After(time.Now()) {
+		badRequest(w, "the end date must be in the future")
 		return
 	}
 	if msg := req.validate(); msg != "" {
@@ -553,9 +564,11 @@ func insertExperiment(ctx context.Context, tx *sql.Tx, req *experimentRequest, o
 	targeting, _ := json.Marshal(req.Targeting)
 	var id int64
 	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO experiments (business_id, business_ids, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_ids, kind)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+		INSERT INTO experiments (business_id, business_ids, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_ids, kind,
+			planned_start, end_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
 		req.BusinessID, req.BusinessIDs, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, salt, req.TrafficTarget, targeting, req.MetricGroupIDs, kind,
+		req.PlannedStart, req.EndAt,
 	).Scan(&id); err != nil {
 		return 0, "", err
 	}
@@ -699,6 +712,11 @@ func (s *Server) UpdateExperiment(w http.ResponseWriter, r *http.Request) {
 		req.BusinessID, req.LayerID, req.Variants, req.TrafficTarget = cur.BusinessID, cur.LayerID, cur.Variants, cur.TrafficTarget
 		req.BusinessIDs = cur.BusinessIDs
 		req.AutoDiversion = ""
+		req.PlannedStart = cur.PlannedStart // it has started
+	}
+	if req.EndAt != nil && !req.EndAt.After(time.Now()) && (cur.EndAt == nil || !req.EndAt.Equal(*cur.EndAt)) {
+		badRequest(w, "the end date must be in the future")
+		return
 	}
 	if msg := req.validate(); msg != "" {
 		badRequest(w, msg)
@@ -744,9 +762,10 @@ func (s *Server) UpdateExperiment(w http.ResponseWriter, r *http.Request) {
 	targeting, _ := json.Marshal(req.Targeting)
 	if _, err := tx.ExecContext(r.Context(), `
 		UPDATE experiments SET business_id = $2, layer_id = $3, name = $4, hypothesis = $5, description = $6, owner_id = $7,
-			traffic_target = $8, targeting = $9, metric_group_ids = $10, status = $11, business_ids = $12, updated_at = now()
+			traffic_target = $8, targeting = $9, metric_group_ids = $10, status = $11, business_ids = $12, planned_start = $13, end_at = $14, updated_at = now()
 		WHERE id = $1`,
 		id, req.BusinessID, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, req.TrafficTarget, targeting, req.MetricGroupIDs, next, req.BusinessIDs,
+		req.PlannedStart, req.EndAt,
 	); err != nil {
 		serverError(w, r, err)
 		return
@@ -1394,4 +1413,25 @@ func namespaceParams(platformKey string, vs []VariantIn) string {
 		}
 	}
 	return ""
+}
+
+// peopleFilters narrows a list to an owner (owner=<id>), the caller's own
+// (mine=1), or what waits for the caller's review (review=me).
+func peopleFilters(q url.Values, me int64, where []string, args []any) ([]string, []any) {
+	if q.Get("mine") == "1" {
+		args = append(args, me)
+		where = append(where, fmt.Sprintf("e.owner_id = $%d", len(args)))
+	}
+	if o := q.Get("owner"); o != "" {
+		var id int64
+		fmt.Sscan(o, &id)
+		args = append(args, id)
+		where = append(where, fmt.Sprintf("e.owner_id = $%d", len(args)))
+	}
+	if q.Get("review") == "me" {
+		args = append(args, me)
+		where = append(where, fmt.Sprintf(`e.status = 'in_review' AND EXISTS (SELECT 1 FROM experiment_reviewers rv
+			WHERE rv.experiment_id = e.id AND rv.user_id = $%d AND rv.decision IS NULL)`, len(args)))
+	}
+	return where, args
 }

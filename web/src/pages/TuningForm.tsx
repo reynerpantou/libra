@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { Combobox } from "../components/Combobox";
 import { JsonEditor, NamespacedJson } from "../components/JsonEditor";
 import { TargetingEditor } from "../components/Targeting";
+import { ScheduleFields } from "../components/Schedule";
 import { ErrorBox, Field, Icon, Loading, Modal, Segmented, TrafficBar } from "../components/ui";
 import { api, type TuningInput } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -60,6 +61,7 @@ export default function TuningForm() {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [plannedStart, setPlannedStart] = useState("");
 
   useEffect(() => {
     const t = existing.data;
@@ -74,6 +76,7 @@ export default function TuningForm() {
     if (e.layer_auto) setAutoDiversion(e.layer_diversion);
     else setLayerId(e.layer_id);
     setTraffic(e.traffic_target);
+    setPlannedStart(e.planned_start ?? "");
     setTargeting(e.targeting);
     setParams(
       t.config.params.map((p) => ({ path: p.path, type: p.type, min: String(p.min), max: String(p.max), control: String(p.control), scale: p.scale, step: p.step ? String(p.step) : "" }))
@@ -120,6 +123,23 @@ export default function TuningForm() {
     }
     return out;
   }, [params]);
+  // Numeric parameters the platform already serves: offered as paths, with
+  // today's value as v0.
+  const served = useAsync(() => api.parameters().catch(() => []), []);
+  const known = useMemo(() => {
+    const out = new Map<string, { value: number; source: string; rank: number }>();
+    const prefix = platformKey + ".";
+    for (const v of served.data ?? []) {
+      if (!platformKey || !v.path.startsWith(prefix) || typeof v.value !== "number") continue;
+      const path = v.path.slice(prefix.length);
+      // Prefer the launched default, then a running test's control.
+      const rank = v.default ? 0 : v.status === "launched" ? 1 : v.is_control ? 2 : 3;
+      const cur = out.get(path);
+      if (!cur || rank < cur.rank)
+        out.set(path, { value: v.value, rank, source: v.default ? `launched by ${v.experiment}` : `${v.is_control ? "control of" : "set by"} ${v.experiment}` });
+    }
+    return out;
+  }, [served.data, platformKey]);
   const previewKey = useDebounced(JSON.stringify([space, algorithm, arms]), 400);
   const preview = useAsync(async () => (space ? api.previewTuning({ params: space, algorithm, arms: Number(arms) || 10 }).catch(() => null) : null), [previewKey]);
 
@@ -157,6 +177,7 @@ export default function TuningForm() {
     traffic_target: traffic,
     targeting,
     metric_group_ids: [],
+    planned_start: plannedStart || null,
     tuning: {
       algorithm,
       params: space ?? [],
@@ -284,15 +305,73 @@ export default function TuningForm() {
             {params.map((p, i) => {
               const set = (patch: Partial<ParamDraft>) => setParams(params.map((x, j) => (j === i ? { ...x, ...patch } : x)));
               return (
-                <ParamRow key={i} p={p} set={set} onRemove={params.length > 1 ? () => setParams(params.filter((_, j) => j !== i)) : undefined} />
+                <ParamRow
+                  key={i}
+                  p={p}
+                  set={(patch) => {
+                    // Picking a known path fills in today's value, its type and a range around it.
+                    const k = patch.path !== undefined && patch.path !== p.path ? known.get(patch.path.trim()) : undefined;
+                    if (k) {
+                      const int = Number.isInteger(k.value) && Math.abs(k.value) >= 2;
+                      const lo = k.value === 0 ? 0 : k.value > 0 ? k.value * 0.5 : k.value * 1.5;
+                      const hi = k.value === 0 ? 1 : k.value > 0 ? k.value * 1.5 : k.value * 0.5;
+                      const round = (x: number) => (int ? Math.round(x) : +x.toPrecision(3));
+                      set({ ...patch, control: String(k.value), type: int ? "int" : "float", min: String(round(lo)), max: String(round(hi)) });
+                    } else set(patch);
+                  }}
+                  hint={known.get(p.path.trim())}
+                  onRemove={params.length > 1 ? () => setParams(params.filter((_, j) => j !== i)) : undefined}
+                />
               );
             })}
           </div>
-          <Field label="Shared parameters (optional)" hint="Served unchanged by v0 and every arm, next to the tuned values.">
+          <datalist id="param-paths">
+            {Array.from(known.entries())
+              .sort((a, b) => a[0].localeCompare(b[0]))
+              .map(([path, k]) => (
+                <option key={path} value={path} label={`${k.value} · ${k.source}`} />
+              ))}
+          </datalist>
+          <div className="small faint">
+            {platformKey
+              ? known.size
+                ? `Type to pick from ${known.size} numeric parameter${known.size === 1 ? "" : "s"} ${platformName} already serves — today's value becomes v0 — or enter a new path.`
+                : `${platformName} doesn't serve numeric parameters yet; enter the path your service reads.`
+              : "Choose a platform to see the parameters it already serves."}
+          </div>
+          <details className="stack-sm" open={Object.keys(parseBase() ?? {}).length > 0}>
+            <summary className="small" style={{ cursor: "pointer" }}>
+              <b>Fixed parameters</b> (optional) — served unchanged by v0 and every arm
+            </summary>
+            <p className="small muted" style={{ margin: 0 }}>
+              Most studies leave this empty. Use it for fields the arms need besides the tuned values — say a flag that switches the new ranking on, so
+              the weights take effect. Each arm serves these fields <i>merged with</i> its tuned values (a tuned path wins if both set it).
+            </p>
             <NamespacedJson platformKey={platformKey} platformName={platformName}>
               <JsonEditor value={baseText} onChange={setBaseText} rows={4} invalid={!parseBase()} />
             </NamespacedJson>
-          </Field>
+          </details>
+          {space && platformKey && (
+            <details>
+              <summary className="small" style={{ cursor: "pointer" }}>
+                What each arm serves
+              </summary>
+              <div className="grid-2" style={{ marginTop: 8 }}>
+                <div>
+                  <div className="small faint">v0 (control)</div>
+                  <pre className="code small">{JSON.stringify({ [platformKey]: applyPaths(parseBase() ?? {}, space, space.map((p) => p.control)) }, null, 2)}</pre>
+                </div>
+                {preview.data?.candidates[0] && (
+                  <div>
+                    <div className="small faint">v1 in round 1 (other arms differ only in the tuned values)</div>
+                    <pre className="code small">
+                      {JSON.stringify({ [platformKey]: applyPaths(parseBase() ?? {}, space, preview.data.candidates[0].values) }, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </details>
+          )}
         </section>
 
         <section className="card card-pad stack">
@@ -365,6 +444,7 @@ export default function TuningForm() {
               </label>
             </Field>
           </div>
+          <ScheduleFields start={plannedStart} onStart={setPlannedStart} studyDays={(Number(maxRounds) || 10) * (Number(roundDays) || 1)} startLocked={locked} />
           <PreviewPlot params={space} candidates={preview.data?.candidates ?? []} note={preview.data?.note} />
         </section>
 
@@ -479,10 +559,33 @@ export default function TuningForm() {
   );
 }
 
-function ParamRow({ p, set, onRemove }: { p: ParamDraft; set: (x: Partial<ParamDraft>) => void; onRemove?: () => void }) {
+// applyPaths writes values at dot paths into a copy of base (as the server does).
+function applyPaths(base: Record<string, unknown>, space: TuningParam[], vals: number[]): Record<string, unknown> {
+  const out = JSON.parse(JSON.stringify(base)) as Record<string, unknown>;
+  space.forEach((p, i) => {
+    const parts = p.path.split(".");
+    let cur = out;
+    for (const k of parts.slice(0, -1)) {
+      if (!cur[k] || typeof cur[k] !== "object" || Array.isArray(cur[k])) cur[k] = {};
+      cur = cur[k] as Record<string, unknown>;
+    }
+    cur[parts[parts.length - 1]] = vals[i];
+  });
+  return out;
+}
+
+function ParamRow({ p, set, onRemove, hint }: { p: ParamDraft; set: (x: Partial<ParamDraft>) => void; onRemove?: () => void; hint?: { value: number; source: string } }) {
   return (
     <>
-      <input className="input input-mono" value={p.path} onChange={(e) => set({ path: e.target.value })} placeholder="search.ranking.relevance_weight" aria-label="Path" />
+      <input
+        className="input input-mono"
+        list="param-paths"
+        value={p.path}
+        onChange={(e) => set({ path: e.target.value })}
+        placeholder="search.ranking.relevance_weight"
+        aria-label="Path"
+        title={hint ? `Today: ${hint.value} (${hint.source})` : undefined}
+      />
       <select className="input" value={p.type} onChange={(e) => set({ type: e.target.value as "float" | "int" })} aria-label="Type">
         <option value="float">float</option>
         <option value="int">int</option>

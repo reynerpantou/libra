@@ -272,6 +272,8 @@ export type Status =
 export interface Experiment {
   id: number;
   kind: "ab" | "tuning";
+  planned_start: string | null;
+  end_at: string | null;
   business_id: number;
   business_key: string;
   business_name: string;
@@ -599,4 +601,17 @@ export interface TuningSummary extends Experiment {
 export interface SurfacePoint extends TuningPrediction {
   x: number;
   y: number;
+}
+
+export interface Notification {
+  id: number;
+  kind: string;
+  experiment_id: number | null;
+  experiment: string;
+  experiment_kind: "ab" | "tuning" | "";
+  status: string;
+  actor: string;
+  detail: Record<string, unknown>;
+  created_at: string;
+  read: boolean;
 }

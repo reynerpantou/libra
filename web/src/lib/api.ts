@@ -1,4 +1,5 @@
 import type {
+  Notification,
   Tuning,
   TuningConfig,
   TuningSummary,
@@ -112,6 +113,7 @@ export interface TuningInput {
   targeting: Targeting;
   metric_group_ids: number[];
   tuning: TuningConfig;
+  planned_start?: string | null;
 }
 
 export interface ExperimentInput {
@@ -127,6 +129,8 @@ export interface ExperimentInput {
   metric_group_ids: number[];
   auto_diversion?: string; // set: a dedicated layer at 100%, split by this diversion
   variants: Variant[];
+  planned_start?: string | null; // a reminder to start
+  end_at?: string | null; // stopped then, unless extended
 }
 
 export type MeasureInput = Omit<Measure, "id" | "business_id" | "platform_id" | "inherited" | "pending_backfill" | "used_by" | "filters_text">;
@@ -211,10 +215,15 @@ export const api = {
   createLayer: (name: string, description: string, diversion: Diversion) => request<Layer>("POST", "/layers", { name, description, diversion }),
   updateLayer: (id: number, name: string, description: string) => request<void>("PUT", `/layers/${id}`, { name, description }),
 
-  experiments: (p: { platform?: string; business?: string; status?: string; q?: string; mine?: string; page: number; size: number }) =>
+  experiments: (p: { platform?: string; business?: string; status?: string; q?: string; mine?: string; owner?: string; review?: string; page: number; size: number }) =>
     request<{ items: Experiment[]; total: number; page: number; size: number }>("GET", `/experiments${qs(p)}`),
   experiment: (id: number) => request<Experiment>("GET", `/experiments/${id}`),
-  tunings: (p: { platform?: string; status?: string; q?: string; page: number; size: number }) =>
+  extend: (id: number, body: { end_at?: string | null; rounds?: number }) => request<Experiment>("POST", `/experiments/${id}/extend`, body),
+  notifications: (p: { before?: string; unread?: string; limit?: string } = {}) =>
+    request<{ items: Notification[]; unread: number }>("GET", `/notifications${qs(p)}`),
+  unreadNotifications: () => request<{ unread: number }>("GET", "/notifications/unread"),
+  readNotifications: (body: { ids?: number[]; all?: boolean }) => request<void>("POST", "/notifications/read", body),
+  tunings: (p: { platform?: string; business?: string; status?: string; q?: string; mine?: string; owner?: string; review?: string; page: number; size: number }) =>
     request<{ items: TuningSummary[]; total: number; page: number; size: number }>("GET", `/tunings${qs(p)}`),
   tuning: (id: number) => request<Tuning>("GET", `/tunings/${id}`),
   createTuning: (t: TuningInput) => request<Tuning>("POST", "/tunings", t),
