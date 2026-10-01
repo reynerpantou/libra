@@ -140,6 +140,7 @@ func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, err
 		SELECT v.experiment_id, v.id, v.key, v.name, v.is_control, v.weight, v.params
 		FROM variants v JOIN experiments e ON e.id = v.experiment_id
 		WHERE e.status IN ('draft', 'in_review', 'approved', 'rejected', 'active', 'paused', 'launched')
+		  AND (NOT v.retired OR v.id = e.launched_variant_id) -- tuning: past rounds' arms stop serving
 		ORDER BY v.experiment_id, v.position, v.id`)
 	if err != nil {
 		return nil, err

@@ -451,6 +451,11 @@ type Options struct {
 	Users    int
 	Days     int // days of history, ending today
 	Seed     int64
+	// Start, when set, simulates Days whole days from this UTC midnight
+	// instead of the days ending today.
+	Start time.Time
+	// UserPrefix names the simulated units (default "demo-<business>").
+	UserPrefix string
 }
 
 // Stats summarizes what was generated.
@@ -513,6 +518,9 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 		return Stats{}, err
 	}
 	rng := rand.New(rand.NewSource(o.Seed))
+	if o.UserPrefix == "" {
+		o.UserPrefix = "demo-" + o.Business
+	}
 	users := make([]userProfile, o.Users)
 	for i := range users {
 		region := regions[len(regions)-1].code
@@ -529,8 +537,8 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 			os = "ios"
 		}
 		users[i] = userProfile{
-			id:       fmt.Sprintf("demo-%s-%06d", o.Business, i),
-			device:   fmt.Sprintf("dev-%s-%06d", o.Business, i),
+			id:       fmt.Sprintf("%s-%06d", o.UserPrefix, i),
+			device:   fmt.Sprintf("dev-%s-%06d", o.UserPrefix[min(len(o.UserPrefix), 5):], i),
 			attrs:    map[string]any{"region": region, "os": os, "device": os, "app_version": fmt.Sprintf("10.%d.0", 1+rng.Intn(5))},
 			activity: 0.15 + 0.5*rng.Float64(),
 			ctr:      0.04 + 0.1*rng.Float64(),
@@ -564,8 +572,11 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 	}
 	for d := o.Days - 1; d >= 0; d-- {
 		dayStart := today.AddDate(0, 0, -d)
+		if !o.Start.IsZero() {
+			dayStart = o.Start.UTC().AddDate(0, 0, o.Days-1-d)
+		}
 		span := 24 * time.Hour
-		if d == 0 {
+		if !dayStart.Add(span).Before(now) {
 			span = now.Sub(dayStart) - time.Minute
 			if span < time.Minute {
 				continue
@@ -678,6 +689,19 @@ func effects(params map[string]any, attrs map[string]any) effect {
 			if attrs["region"] == "ID" {
 				fx.cvr *= 1.03 // stronger where price sensitivity is higher
 			}
+		}
+	}
+	// AB Tuning demo: two ranking weights with a smooth true optimum near
+	// relevance 0.72 / freshness 0.70. Freshness costs latency (≈ +4% per
+	// +0.1), so a 5% latency guardrail caps it near 0.62.
+	if ranking, ok := search["ranking"].(map[string]any); ok {
+		rel, okR := ranking["relevance_weight"].(float64)
+		fresh, okF := ranking["freshness_weight"].(float64)
+		if okR && okF {
+			bump := 0.10 * math.Exp(-(math.Pow(rel-0.72, 2)/0.03 + math.Pow(fresh-0.70, 2)/0.05))
+			fx.ctr *= 1 + 1.5*bump
+			fx.cvr *= 1 + 0.3*bump
+			fx.latency *= 1 + 0.4*(fresh-0.5)
 		}
 	}
 	if ads, ok := search["ads"].(map[string]any); ok {

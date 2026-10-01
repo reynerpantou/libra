@@ -425,3 +425,13 @@ func (s *Scheduler) Loop(ctx context.Context, interval time.Duration) {
 		}
 	}
 }
+
+// DataThrough is the time up to which raw data has been processed: the
+// start of the last successful run, minus the settle window.
+func DataThrough(ctx context.Context, db *sql.DB) (time.Time, bool) {
+	var t sql.NullTime
+	if err := db.QueryRowContext(ctx, `SELECT max(started_at) FROM pipeline_runs WHERE status = 'succeeded'`).Scan(&t); err != nil || !t.Valid {
+		return time.Time{}, false
+	}
+	return t.Time.Add(-settle), true
+}

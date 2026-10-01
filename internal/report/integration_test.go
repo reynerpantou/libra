@@ -12,6 +12,7 @@ import (
 	"github.com/reynerpantou/libra/internal/report"
 	"github.com/reynerpantou/libra/internal/serving"
 	"github.com/reynerpantou/libra/internal/simulate"
+	"github.com/reynerpantou/libra/internal/tuning"
 )
 
 // TestEndToEnd seeds the demo, simulates traffic, runs the pipeline and
@@ -207,6 +208,37 @@ func TestEndToEnd(t *testing.T) {
 	ps, err = pipeline.RunSettled(ctx, db, "test", 0)
 	if err != nil || ps.MeasuresBackfill != 1 {
 		t.Fatalf("backfill: %+v %v", ps, err)
+	}
+
+	// AB Tuning on the same data: play three constrained-search rounds and
+	// check each was measured, the arms rotated, and units re-randomised.
+	tid, err := simulate.SeedTuning(ctx, db, 0, simulate.TuningOptions{Algorithm: tuning.Constrained, Users: 4000, Rounds: 3, MaxRounds: 6, Seed: 11})
+	if err != nil {
+		t.Fatalf("tuning: %v", err)
+	}
+	var analysed, running int
+	_ = db.QueryRow(`SELECT count(*) FILTER (WHERE status = 'analyzed'), count(*) FILTER (WHERE status = 'running') FROM tuning_rounds WHERE experiment_id = $1`, tid).Scan(&analysed, &running)
+	if analysed != 3 || running != 1 {
+		t.Fatalf("tuning rounds: %d analysed, %d running", analysed, running)
+	}
+	var retired, live int
+	_ = db.QueryRow(`SELECT count(*) FILTER (WHERE retired), count(*) FILTER (WHERE NOT retired AND NOT is_control) FROM variants WHERE experiment_id = $1`, tid).Scan(&retired, &live)
+	if retired != 30 || live != 10 {
+		t.Fatalf("tuning variants: %d retired, %d live", retired, live)
+	}
+	var salt string
+	_ = db.QueryRow(`SELECT salt FROM experiments WHERE id = $1`, tid).Scan(&salt)
+	if len(salt) < 3 || salt[len(salt)-3:] != ":r4" {
+		t.Fatalf("round 4 should re-randomise units, salt %q", salt)
+	}
+	obs, err := tuning.Observations(ctx, db, tid)
+	if err != nil || len(obs) < 25 {
+		t.Fatalf("tuning observations: %d (%v)", len(obs), err)
+	}
+	for _, o := range obs {
+		if o.Var <= 0 || len(o.Cons) != 1 {
+			t.Fatalf("observation without variance or guardrail: %+v", o)
+		}
 	}
 }
 

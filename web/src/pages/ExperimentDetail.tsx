@@ -55,7 +55,27 @@ export default function ExperimentDetail() {
   );
 }
 
-function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => void }) {
+// Header shows an experiment's (or tuning study's) status and lifecycle
+// actions. Tuning studies pass their own edit link and launch choices.
+export function Header({
+  e,
+  onChange,
+  editTo,
+  canClone = true,
+  launchOptions,
+  defaultLaunch,
+  extra,
+  editable,
+}: {
+  e: Experiment;
+  onChange: (e: Experiment) => void;
+  editTo?: string;
+  canClone?: boolean;
+  launchOptions?: { id: number; label: string }[];
+  defaultLaunch?: number;
+  extra?: ReactNode;
+  editable?: boolean;
+}) {
   const canEdit = useCan("editor");
   const nav = useNavigate();
   const [pending, setPending] = useState<string | null>(null);
@@ -160,28 +180,31 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
                 setError("");
                 if (needsDialog.includes(a)) {
                   setPending(a);
-                  setVariantId(e.variants?.find((v) => !v.is_control)?.id ?? 0);
+                  setVariantId(defaultLaunch ?? e.variants?.find((v) => !v.is_control)?.id ?? 0);
                 } else run(a);
               }}
             >
               {actionLabel[a]}
             </button>
           ))}
-          {!["stopped", "launched", "archived", "in_review"].includes(e.status) && (
-            <Link className="btn" to={`/experiments/${e.id}/edit`}>
+          {(editable ?? !["stopped", "launched", "archived", "in_review"].includes(e.status)) && (
+            <Link className="btn" to={editTo ?? `/experiments/${e.id}/edit`}>
               <Icon name="edit" /> Edit
             </Link>
           )}
-          <button
-            className="btn"
-            title="Copy into a new draft"
-            onClick={async () => {
-              const r = await api.clone(e.id);
-              nav(`/experiments/${r.id}`);
-            }}
-          >
-            <Icon name="copy" /> Clone
-          </button>
+          {canClone && (
+            <button
+              className="btn"
+              title="Copy into a new draft"
+              onClick={async () => {
+                const r = await api.clone(e.id);
+                nav(`/experiments/${r.id}`);
+              }}
+            >
+              <Icon name="copy" /> Clone
+            </button>
+          )}
+          {extra}
         </div>
       )}
       {error && !pending && <div style={{ width: "100%" }}><ErrorBox error={error} /></div>}
@@ -265,11 +288,17 @@ function Header({ e, onChange }: { e: Experiment; onChange: (e: Experiment) => v
               </p>
               <Field label="Variant to launch">
                 <select className="input" value={variantId} onChange={(x) => setVariantId(Number(x.target.value))}>
-                  {e.variants?.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.name || v.key} {v.is_control ? "(control)" : ""}
-                    </option>
-                  ))}
+                  {launchOptions
+                    ? launchOptions.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.label}
+                        </option>
+                      ))
+                    : e.variants?.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.name || v.key} {v.is_control ? "(control)" : ""}
+                        </option>
+                      ))}
                 </select>
               </Field>
               <Field group label="Release" hint="A gradual release serves the variant to a growing share of units; the rest keep the current defaults.">
@@ -855,7 +884,7 @@ function Whitelist({ e, reload }: { e: Experiment; reload: () => void }) {
   );
 }
 
-function History({ id, version }: { id: number; version: string }) {
+export function History({ id, version }: { id: number; version: string }) {
   const h = useAsync(() => api.history(id), [id, version]);
   if (h.loading && !h.data) return <Loading />;
   return (
