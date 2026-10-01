@@ -14,12 +14,18 @@ import (
 
 // TuningOptions control the AB Tuning demo.
 type TuningOptions struct {
-	Algorithm string // default bayesian
-	Users     int    // default 30000
-	Rounds    int    // finished rounds to play (default 6); one more is left running
-	MaxRounds int    // default 10
-	Seed      int64
-	Log       func(format string, args ...any)
+	Name        string // default "Ranking weights auto-tune"
+	Hypothesis  string
+	Description string
+	Space       tuning.Space // default: two ranking weights in [0.2, 1.0]
+	Arms        int          // default 10
+	Prefix      string       // simulated user ids (default "demo-tune")
+	Algorithm   string       // default bayesian
+	Users       int          // default 30000
+	Rounds      int          // finished rounds to play (default 6); one more is left running
+	MaxRounds   int          // default 10
+	Seed        int64
+	Log         func(format string, args ...any)
 }
 
 // SeedTuning creates a running tuning study on the demo search business and
@@ -37,11 +43,31 @@ func SeedTuning(ctx context.Context, db *sql.DB, ownerID int64, o TuningOptions)
 	if o.Rounds <= 0 {
 		o.Rounds = 6
 	}
-	if o.MaxRounds <= o.Rounds {
-		o.MaxRounds = o.Rounds + 4
+	if o.MaxRounds == 0 {
+		o.MaxRounds = o.Rounds + 4 // leave the study running
+	}
+	if o.MaxRounds < o.Rounds {
+		o.MaxRounds = o.Rounds // the last round played finishes it
 	}
 	if o.Log == nil {
 		o.Log = func(string, ...any) {}
+	}
+	if o.Name == "" {
+		o.Name = "Ranking weights auto-tune"
+		o.Hypothesis = "Some mix of relevance and freshness weights lifts search CTR without slowing search down."
+		o.Description = "Two ranking weights tuned in [0.2, 1.0]. v0 keeps today's 0.5 / 0.5."
+	}
+	if o.Space == nil {
+		o.Space = tuning.Space{
+			{Path: "search.ranking.relevance_weight", Type: "float", Min: 0.2, Max: 1.0, Control: 0.5},
+			{Path: "search.ranking.freshness_weight", Type: "float", Min: 0.2, Max: 1.0, Control: 0.5},
+		}
+	}
+	if o.Arms <= 0 {
+		o.Arms = 10
+	}
+	if o.Prefix == "" {
+		o.Prefix = "demo-tune"
 	}
 	var bid, ctrID, latencyID int64
 	if err := db.QueryRowContext(ctx, `SELECT b.id FROM businesses b JOIN platforms p ON p.id = b.platform_id WHERE p.key = $1 AND b.key = 'search'`, demoPlatform.key).Scan(&bid); err != nil {
@@ -54,16 +80,13 @@ func SeedTuning(ctx context.Context, db *sql.DB, ownerID int64, o TuningOptions)
 		return 0, fmt.Errorf("demo metric search_latency_ms: %w", err)
 	}
 	cfg := tuning.Config{
-		Algorithm: o.Algorithm,
-		Params: tuning.Space{
-			{Path: "search.ranking.relevance_weight", Type: "float", Min: 0.2, Max: 1.0, Control: 0.5},
-			{Path: "search.ranking.freshness_weight", Type: "float", Min: 0.2, Max: 1.0, Control: 0.5},
-		},
+		Algorithm:          o.Algorithm,
+		Params:             o.Space,
 		BaseParams:         map[string]any{},
 		ObjectiveMetricID:  ctrID,
 		ObjectiveDirection: "increase",
 		Guardrails:         []tuning.Guardrail{{MetricID: latencyID, MaxDrop: 0.05}},
-		Arms:               10,
+		Arms:               o.Arms,
 		RoundDays:          1,
 		MaxRounds:          o.MaxRounds,
 		KeepBest:           true,
@@ -99,9 +122,7 @@ func SeedTuning(ctx context.Context, db *sql.DB, ownerID int64, o TuningOptions)
 		INSERT INTO experiments (business_id, business_ids, layer_id, name, hypothesis, description, owner_id, status, salt, traffic_target, buckets,
 			targeting, metric_group_ids, started_at, created_at, kind)
 		VALUES ($1, ARRAY[$1::bigint], $2, $3, $4, $5, $6, 'active', $7, 1000, $8, '{"groups": []}', '{}', $9, $9, 'tuning') RETURNING id`,
-		bid, layerID, "Ranking weights auto-tune",
-		"Some mix of relevance and freshness weights lifts search CTR without slowing search down.",
-		"Two ranking weights tuned in [0.2, 1.0]. v0 keeps today's 0.5 / 0.5.",
+		bid, layerID, o.Name, o.Hypothesis, o.Description,
 		owner, salt, buckets, start).Scan(&id); err != nil {
 		return 0, err
 	}
@@ -142,7 +163,7 @@ func SeedTuning(ctx context.Context, db *sql.DB, ownerID int64, o TuningOptions)
 	for r := 1; r <= o.Rounds; r++ {
 		day := start.AddDate(0, 0, r-1)
 		st, err := Generate(ctx, db, Options{Platform: demoPlatform.key, Business: "search", Users: o.Users, Days: 1, Start: day,
-			UserPrefix: "demo-tune", Seed: o.Seed + int64(r)})
+			UserPrefix: o.Prefix, Seed: o.Seed + int64(r)})
 		if err != nil {
 			return id, err
 		}

@@ -1,4 +1,4 @@
-.PHONY: setup web build run dev-api dev-web docker db demo link claim users test tidy
+.PHONY: setup web build run dev-api dev-web docker db demo demo-fresh reset link claim users test tidy
 
 # Load .env (if present) so the binary uses the same settings as docker compose.
 -include .env
@@ -32,8 +32,19 @@ dev-api: db   ## run the API against local Postgres
 dev-web: web/node_modules ## Vite dev server on :5173 (proxies /api to :8080)
 	cd web && npm run dev
 
-demo:         ## seed the demo "search" business and simulate 14 days of traffic
+demo:         ## build the full demo (every feature) on an empty database
 	go run ./cmd/libra demo
+
+reset:        ## DROP EVERYTHING in the database and recreate it empty (asks first; force=1 skips)
+	@if [ "$(force)" != "1" ]; then \
+		printf "This drops every table and all data in $${LIBRA_DATABASE_URL:-the configured database}. Type 'yes' to continue: "; \
+		read ans; [ "$$ans" = "yes" ] || { echo "aborted"; exit 1; }; \
+	fi
+	go run ./cmd/libra reset -yes
+
+demo-fresh:   ## drop everything, then build the full demo
+	@$(MAKE) --no-print-directory reset force=$(force)
+	@$(MAKE) --no-print-directory demo
 
 link:         ## one-time sign-in link: make link user=<username>
 	@test -n "$(user)" || (echo "usage: make link user=<username>   (see: make users)"; exit 1)
