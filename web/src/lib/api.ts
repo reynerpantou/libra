@@ -1,4 +1,8 @@
 import type {
+  Tuning,
+  TuningConfig,
+  TuningSummary,
+  SurfacePoint,
   ApiKey,
   Attribute,
   AttrType,
@@ -96,6 +100,19 @@ export type ResolveBody = {
   business: string;
   attrs?: Record<string, unknown>;
 };
+
+export interface TuningInput {
+  business_ids: number[];
+  layer_id: number;
+  auto_diversion?: string;
+  name: string;
+  hypothesis: string;
+  description: string;
+  traffic_target: number;
+  targeting: Targeting;
+  metric_group_ids: number[];
+  tuning: TuningConfig;
+}
 
 export interface ExperimentInput {
   business_id: number;
@@ -197,6 +214,16 @@ export const api = {
   experiments: (p: { platform?: string; business?: string; status?: string; q?: string; mine?: string; page: number; size: number }) =>
     request<{ items: Experiment[]; total: number; page: number; size: number }>("GET", `/experiments${qs(p)}`),
   experiment: (id: number) => request<Experiment>("GET", `/experiments/${id}`),
+  tunings: (p: { platform?: string; status?: string; q?: string; page: number; size: number }) =>
+    request<{ items: TuningSummary[]; total: number; page: number; size: number }>("GET", `/tunings${qs(p)}`),
+  tuning: (id: number) => request<Tuning>("GET", `/tunings/${id}`),
+  createTuning: (t: TuningInput) => request<Tuning>("POST", "/tunings", t),
+  updateTuning: (id: number, t: TuningInput) => request<Tuning>("PUT", `/tunings/${id}`, t),
+  previewTuning: (c: Partial<TuningConfig>) =>
+    request<{ candidates: { x: number[]; values: number[]; source: string }[]; note: string }>("POST", "/tunings/preview", c),
+  advanceTuning: (id: number) => request<{ round: number; next: number; finished: boolean; extended: boolean; note: string }>("POST", `/tunings/${id}/advance`),
+  tuningSurface: (id: number, x: number, y: number) =>
+    request<{ x: number; y: number; fixed: number[]; grid: SurfacePoint[] | null }>("GET", `/tunings/${id}/surface${qs({ x: String(x), y: String(y) })}`),
   createExperiment: (e: ExperimentInput) => request<Experiment>("POST", "/experiments", e),
   updateExperiment: (id: number, e: ExperimentInput) => request<Experiment>("PUT", `/experiments/${id}`, e),
   action: (id: number, action: string, body: { note?: string; variant_id?: number; gradual?: Gradual; reviewer_ids?: number[] } = {}) =>

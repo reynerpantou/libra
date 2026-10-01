@@ -65,7 +65,7 @@ export default function Layout() {
           </NavLink>
           <div className="nav-label">AB Tuning</div>
           <NavLink to="/tuning">
-            <Icon name="sliders" /> Tuning <span className="badge nav-soon">Soon</span>
+            <Icon name="sliders" /> Tuning studies
           </NavLink>
           <div className="nav-label">Metrics</div>
           <NavLink to="/businesses">

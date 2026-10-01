@@ -153,6 +153,31 @@ People** by email. For recovery, `libra sign-in-link <username>`
   launch wins.
 - Every change is in the experiment's history (audit log).
 
+## AB Tuning
+
+A tuning study searches numeric parameters (say two ranking weights in
+[0.2, 1.0]) instead of comparing a few fixed variants:
+
+1. define the tunable params, their bounds and today's values (v0);
+2. pick an objective metric and optional guardrails ("latency at most 5% worse");
+3. choose N treatment arms and a search algorithm;
+4. each round, every arm serves one candidate point; v0 stays the control;
+5. when a round ends (00:00 UTC, once the pipeline has the data), each arm's
+   lift versus v0 is measured and the algorithm picks the next round's points
+   from every result so far.
+
+Algorithms (`internal/tuning`): **random** and **quasi-random** (scrambled
+Halton) sampling explore; **bayesian** fits a Gaussian process to all results
+and picks a batch by expected improvement; **constrained** adds a Gaussian
+process per guardrail, multiplies in the probability they hold, and searches a
+trust region around the best feasible point. Candidates come from a model of
+the whole space, not from mutating one winner. Units are re-randomised across
+arms every round (a new salt) and each round's arms get new variant ids, so a
+unit's earlier arm never leaks into the next measurement. The recommendation
+is the tested point the model rates best among those likely to keep the
+guardrails; launch it like any variant. `libra demo-tuning` plays a sample
+study.
+
 ## Integrating a service
 
 Create an API key in **Settings**, or with `libra api-key <name> runtime,ingest`.

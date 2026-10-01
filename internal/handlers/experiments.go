@@ -17,6 +17,7 @@ import (
 	"github.com/reynerpantou/libra/internal/auth"
 	"github.com/reynerpantou/libra/internal/middleware"
 	"github.com/reynerpantou/libra/internal/serving"
+	"github.com/reynerpantou/libra/internal/tuning"
 )
 
 // ---- layers ----
@@ -159,6 +160,8 @@ type VariantIn struct {
 	IsControl bool           `json:"is_control"`
 	Weight    int            `json:"weight"` // per mille
 	Params    map[string]any `json:"params"`
+	Retired   bool           `json:"retired,omitempty"` // tuning: an arm of a finished round
+	Round     int            `json:"round,omitempty"`   // tuning: the round it belongs to
 }
 
 type WhitelistEntry struct {
@@ -170,6 +173,7 @@ type WhitelistEntry struct {
 
 type Experiment struct {
 	ID                int64            `json:"id"`
+	Kind              string           `json:"kind"` // ab | tuning
 	BusinessID        int64            `json:"business_id"`
 	BusinessKey       string           `json:"business_key"`
 	BusinessIDs       []int64          `json:"business_ids"`   // every business it runs in, primary first
@@ -210,7 +214,7 @@ type Experiment struct {
 }
 
 const experimentSelect = `
-	SELECT e.id, e.business_id, b.key, b.name, array_to_string(e.business_ids, ','),
+	SELECT e.id, e.kind, e.business_id, b.key, b.name, array_to_string(e.business_ids, ','),
 	       COALESCE((SELECT string_agg(bb.key || chr(31) || bb.name, chr(30) ORDER BY array_position(e.business_ids, bb.id)) FROM businesses bb WHERE bb.id = ANY(e.business_ids)), ''),
 	       p.id, p.key, p.name, e.layer_id, l.name, l.diversion, l.auto, e.name, e.hypothesis, e.description,
 	       e.owner_id, COALESCE(NULLIF(o.display_name, ''), o.username, ''), e.status, e.traffic_target, cardinality(e.buckets),
@@ -229,7 +233,7 @@ func scanExperiment(sc interface{ Scan(...any) error }) (Experiment, error) {
 	var targeting []byte
 	var groups string
 	var bids, bnames string
-	err := sc.Scan(&e.ID, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &bids, &bnames, &e.PlatformID, &e.PlatformKey, &e.PlatformName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.LayerAuto, &e.Name, &e.Hypothesis, &e.Description,
+	err := sc.Scan(&e.ID, &e.Kind, &e.BusinessID, &e.BusinessKey, &e.BusinessName, &bids, &bnames, &e.PlatformID, &e.PlatformKey, &e.PlatformName, &e.LayerID, &e.LayerName, &e.LayerDiversion, &e.LayerAuto, &e.Name, &e.Hypothesis, &e.Description,
 		&e.OwnerID, &e.OwnerName, &e.Status, &e.TrafficTarget, &e.TrafficHeld,
 		&targeting, &groups, &e.ReviewNote, &e.ReviewerName,
 		&e.LaunchedVariantID, &e.LaunchRollout, &e.StartedAt, &e.EndedAt, &e.LaunchedAt, &e.CreatedAt, &e.UpdatedAt, &e.Units)
@@ -255,6 +259,13 @@ func (s *Server) ListExperiments(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	where := []string{"true"}
 	var args []any
+	// AB tests by default; kind=tuning lists tuning studies.
+	kind := q.Get("kind")
+	if kind == "" {
+		kind = "ab"
+	}
+	args = append(args, kind)
+	where = append(where, "e.kind = $1")
 	// business: an id, or a key (with platform, a key is unambiguous).
 	if p := q.Get("platform"); p != "" {
 		args = append(args, p)
@@ -354,7 +365,7 @@ type querier interface {
 }
 
 func (s *Server) loadVariants(ctx context.Context, q querier, expID int64) ([]VariantIn, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id, key, name, is_control, weight, params FROM variants WHERE experiment_id = $1 ORDER BY position, id`, expID)
+	rows, err := q.QueryContext(ctx, `SELECT id, key, name, is_control, weight, params, retired, round FROM variants WHERE experiment_id = $1 ORDER BY round, position, id`, expID)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +374,7 @@ func (s *Server) loadVariants(ctx context.Context, q querier, expID int64) ([]Va
 	for rows.Next() {
 		var v VariantIn
 		var params []byte
-		if err := rows.Scan(&v.ID, &v.Key, &v.Name, &v.IsControl, &v.Weight, &params); err != nil {
+		if err := rows.Scan(&v.ID, &v.Key, &v.Name, &v.IsControl, &v.Weight, &params, &v.Retired, &v.Round); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(params, &v.Params)
@@ -492,40 +503,17 @@ func (s *Server) CreateExperiment(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, msg)
 		return
 	}
-	// The creator owns the experiment.
-	owner := user(r).ID
-	salt, err := auth.NewToken()
-	if err != nil {
-		serverError(w, r, err)
-		return
-	}
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
-	if req.AutoDiversion != "" {
-		if req.LayerID, err = createAutoLayer(r.Context(), tx, req.AutoDiversion); err != nil {
-			serverError(w, r, err)
-			return
-		}
-	}
-	targeting, _ := json.Marshal(req.Targeting)
-	var id int64
-	if err := tx.QueryRowContext(r.Context(), `
-		INSERT INTO experiments (business_id, business_ids, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_ids)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
-		req.BusinessID, req.BusinessIDs, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, salt[:16], req.TrafficTarget, targeting, req.MetricGroupIDs,
-	).Scan(&id); err != nil {
+	// The creator owns the experiment.
+	id, _, err := insertExperiment(r.Context(), tx, &req, user(r).ID, "ab")
+	if err != nil {
 		serverError(w, r, err)
 		return
-	}
-	if req.AutoDiversion != "" {
-		if _, err := tx.ExecContext(r.Context(), `UPDATE layers SET name = $2 WHERE id = $1`, req.LayerID, fmt.Sprintf("auto-%d", id)); err != nil {
-			serverError(w, r, err)
-			return
-		}
 	}
 	if err := writeVariants(r.Context(), tx, id, req.Variants); err != nil {
 		serverError(w, r, err)
@@ -547,6 +535,36 @@ func (s *Server) CreateExperiment(w http.ResponseWriter, r *http.Request) {
 	e, _ := s.loadExperiment(r.Context(), id, true)
 	e.Actions = availableActions(e, user(r))
 	writeJSON(w, http.StatusCreated, e)
+}
+
+// insertExperiment creates the experiment row (and its dedicated layer for
+// Auto traffic), returning its id and salt.
+func insertExperiment(ctx context.Context, tx *sql.Tx, req *experimentRequest, owner int64, kind string) (int64, string, error) {
+	tok, err := auth.NewToken()
+	if err != nil {
+		return 0, "", err
+	}
+	salt := tok[:16]
+	if req.AutoDiversion != "" {
+		if req.LayerID, err = createAutoLayer(ctx, tx, req.AutoDiversion); err != nil {
+			return 0, "", err
+		}
+	}
+	targeting, _ := json.Marshal(req.Targeting)
+	var id int64
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO experiments (business_id, business_ids, layer_id, name, hypothesis, description, owner_id, salt, traffic_target, targeting, metric_group_ids, kind)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+		req.BusinessID, req.BusinessIDs, req.LayerID, req.Name, req.Hypothesis, req.Description, owner, salt, req.TrafficTarget, targeting, req.MetricGroupIDs, kind,
+	).Scan(&id); err != nil {
+		return 0, "", err
+	}
+	if req.AutoDiversion != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE layers SET name = $2 WHERE id = $1`, req.LayerID, fmt.Sprintf("auto-%d", id)); err != nil {
+			return 0, "", err
+		}
+	}
+	return id, salt, nil
 }
 
 func (s *Server) checkRefs(ctx context.Context, req *experimentRequest, self int64) string {
@@ -661,6 +679,10 @@ func (s *Server) UpdateExperiment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		serverError(w, r, err)
+		return
+	}
+	if cur.Kind == "tuning" {
+		badRequest(w, "edit a tuning study from its Tuning page")
 		return
 	}
 	if cur.Status == assign.StatusArchived || cur.Status == assign.StatusLaunched || cur.Status == assign.StatusStopped {
@@ -1032,6 +1054,12 @@ func (s *Server) ExperimentAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if action == "stop" || action == "archive" || action == "launch" {
 		err = cancelPlans(r.Context(), tx, id, "", "the experiment was "+to)
+		if err == nil && e.Kind == "tuning" {
+			err = tuning.Finish(r.Context(), tx, id, time.Now().UTC(), "Ended: the study was "+to+".")
+		}
+	}
+	if err == nil && action == "start" && e.Kind == "tuning" {
+		err = tuning.StartRound(r.Context(), tx, id, time.Now().UTC())
 	}
 	if err == nil && planKind != "" {
 		detail["gradual"] = fmt.Sprintf("+%s every %d min up to %s", pct(req.Gradual.Step), req.Gradual.IntervalMinutes, pct(planTarget))
@@ -1229,6 +1257,10 @@ func (s *Server) CloneExperiment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		serverError(w, r, err)
+		return
+	}
+	if e.Kind == "tuning" {
+		badRequest(w, "clone a tuning study from its Tuning page")
 		return
 	}
 	salt, err := auth.NewToken()

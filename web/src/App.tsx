@@ -12,6 +12,8 @@ import Integrate from "./pages/Integrate";
 import Layers from "./pages/Layers";
 import Diversions from "./pages/Diversions";
 import Tuning from "./pages/Tuning";
+import TuningDetail from "./pages/TuningDetail";
+import TuningForm from "./pages/TuningForm";
 import Login, { SignInLink } from "./pages/Login";
 import Setup from "./pages/Setup";
 import Pipeline from "./pages/Pipeline";
@@ -52,6 +54,9 @@ export default function App() {
         <Route path="/layers" element={<Layers />} />
         <Route path="/diversions" element={<Diversions />} />
         <Route path="/tuning" element={<Tuning />} />
+        <Route path="/tuning/new" element={<TuningForm />} />
+        <Route path="/tuning/:id" element={<TuningDetail />} />
+        <Route path="/tuning/:id/edit" element={<TuningForm />} />
         <Route path="/attributes" element={<Attributes />} />
         <Route path="/tools" element={<Tools />} />
         <Route path="/pipeline" element={<Pipeline />} />

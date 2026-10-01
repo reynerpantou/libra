@@ -72,6 +72,7 @@ func serve(db *sql.DB, cfg config.Config) {
 
 	s := handlers.New(db, cfg, store, logger, sched)
 	go s.RolloutLoop(ctx, 30*time.Second)
+	go s.TuningLoop(ctx, time.Minute)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           routes(s, db, cfg),
@@ -189,6 +190,13 @@ func routes(s *handlers.Server, db *sql.DB, cfg config.Config) http.Handler {
 	api.Handle("GET /experiments/{id}/trend", viewer(s.ExperimentTrend))
 	api.Handle("GET /experiments/{id}/exposures", viewer(s.ExposureDaily))
 	api.Handle("GET /experiments/{id}/params", viewer(s.ParamUsage))
+	api.Handle("GET /tunings", viewer(s.ListTunings))
+	api.Handle("POST /tunings", editor(s.CreateTuning))
+	api.Handle("POST /tunings/preview", viewer(s.PreviewTuning))
+	api.Handle("GET /tunings/{id}", viewer(s.GetTuning))
+	api.Handle("PUT /tunings/{id}", editor(s.UpdateTuning))
+	api.Handle("POST /tunings/{id}/advance", editor(s.AdvanceTuning))
+	api.Handle("GET /tunings/{id}/surface", viewer(s.TuningSurface))
 	api.Handle("GET /diversions", viewer(s.ListDiversions))
 	api.Handle("POST /diversions", admin(s.CreateDiversion))
 	api.Handle("PUT /diversions/{key}", admin(s.UpdateDiversion))
@@ -313,6 +321,7 @@ const usage = `usage:
   libra api-key <name> <scope>[,<scope>]       create an API key (scopes: runtime, ingest)
   libra pipeline                               run the data pipeline once
   libra demo [-users N] [-days N]              seed the demo platform (search + reco), simulate traffic, run the pipeline
+  libra demo-tuning [-algorithm A] [-rounds N]  add an AB Tuning study to the demo and play its first rounds
   libra simulate [-platform P] [-business K] [-users N] [-days N] [-seed S]
                                                generate more synthetic traffic for a business`
 
@@ -410,6 +419,23 @@ func runCommand(db *sql.DB, cfg config.Config, cmd string, args []string) error 
 			return err
 		}
 		fmt.Printf("pipeline: %d assignments, %d measure rows in %.1fs\n", ps.Assignments, ps.Rows, ps.Seconds)
+	case "demo-tuning":
+		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		algorithm := fs.String("algorithm", "bayesian", "random, quasi_random, bayesian or constrained")
+		rounds := fs.Int("rounds", 6, "finished rounds to play (one more stays running)")
+		users := fs.Int("users", 30000, "simulated users per round")
+		seed := fs.Int64("seed", time.Now().UnixNano()%1_000_000, "random seed")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		var owner int64
+		_ = db.QueryRow(`SELECT id FROM users WHERE is_owner`).Scan(&owner)
+		id, err := simulate.SeedTuning(ctx, db, owner, simulate.TuningOptions{Algorithm: *algorithm, Rounds: *rounds, Users: *users, Seed: *seed,
+			Log: func(f string, a ...any) { fmt.Printf(f+"\n", a...) }})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("tuning study %d is running round %d — open AB Tuning in the app\n", id, *rounds+1)
 	default:
 		return errors.New(usage)
 	}

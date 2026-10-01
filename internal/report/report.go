@@ -593,18 +593,24 @@ func withUsers(m stats.Moments, k int) stats.Moments {
 // the sums and cross sums of every measure over each unit's post-exposure
 // window — one pass in SQL, no per-unit data leaves the database.
 func moments(ctx context.Context, db *sql.DB, expID int64, from, to time.Time, measureIDs []int64, measures map[int64]pipeline.Measure, dimension string) ([]cell, error) {
-	k := len(measureIDs)
 	args := []any{expID, from, to}
 	seg := "''"
 	if dimension != "" {
 		args = append(args, dimension)
 		seg = fmt.Sprintf("COALESCE(NULLIF(dims->>($%d::text), ''), '(not set)')", len(args))
 	}
+	units := fmt.Sprintf(`SELECT unit_id, unit_type, variant_id, first_day, %s AS seg FROM assignments
+		WHERE experiment_id = $1 AND NOT multi_variant AND first_day BETWEEN $2 AND $3`, seg)
+	return momentsOf(ctx, db, units, args, 3, measureIDs, measures)
+}
+
+// momentsOf runs the moments query over a set of units: units is a query
+// returning (unit_id, unit_type, variant_id, first_day, seg); each unit's
+// measures count from its first_day through the day in argument endArg.
+func momentsOf(ctx context.Context, db *sql.DB, units string, args []any, endArg int, measureIDs []int64, measures map[int64]pipeline.Measure) ([]cell, error) {
+	k := len(measureIDs)
 	var q strings.Builder
-	fmt.Fprintf(&q, `WITH u AS (
-		SELECT unit_id, unit_type, variant_id, first_day, %s AS seg FROM assignments
-		WHERE experiment_id = $1 AND NOT multi_variant AND first_day BETWEEN $2 AND $3
-	)`, seg)
+	fmt.Fprintf(&q, `WITH u AS (%s)`, units)
 	if k > 0 {
 		args = append(args, measureIDs)
 		q.WriteString(`, m AS (SELECT u.unit_id, u.variant_id, u.seg`)
@@ -613,8 +619,8 @@ func moments(ctx context.Context, db *sql.DB, expID int64, from, to time.Time, m
 			fmt.Fprintf(&q, `, COALESCE(%s(d.value) FILTER (WHERE d.measure_id = %d), 0) AS m%d`, agg, id, i)
 		}
 		fmt.Fprintf(&q, ` FROM u LEFT JOIN unit_measure_daily d
-			ON d.unit_id = u.unit_id AND d.unit_type = u.unit_type AND d.measure_id = ANY($%d::bigint[]) AND d.day BETWEEN u.first_day AND $3
-			GROUP BY u.unit_id, u.variant_id, u.seg)`, len(args))
+			ON d.unit_id = u.unit_id AND d.unit_type = u.unit_type AND d.measure_id = ANY($%d::bigint[]) AND d.day BETWEEN u.first_day AND $%d::date
+			GROUP BY u.unit_id, u.variant_id, u.seg)`, len(args), endArg)
 	} else {
 		q.WriteString(`, m AS (SELECT * FROM u)`)
 	}
@@ -804,4 +810,50 @@ func measureIDsOf(d *Definitions) []int64 {
 		out = append(out, id)
 	}
 	return out
+}
+
+// ArmResults measures a set of variants over a time window, the way a
+// tuning round is analysed: units are those exposed to exactly one of the
+// variants during [from, to); each unit's measures count from the day of its
+// first exposure in the window through the window's last day. Comparisons
+// are against the control variant.
+func ArmResults(ctx context.Context, db *sql.DB, expID int64, variants []Variant, from, to time.Time, metricIDs []int64, alpha float64) (Segment, error) {
+	if alpha <= 0 || alpha >= 0.5 {
+		alpha = 0.05
+	}
+	defs, err := loadMetricDefs(ctx, db, metricIDs)
+	if err != nil {
+		return Segment{}, err
+	}
+	var metrics []MetricDef
+	for _, id := range metricIDs {
+		if d, ok := defs[id]; ok {
+			metrics = append(metrics, d)
+		}
+	}
+	cat := newCatalog(ctx, db)
+	comps, measureIDs, index := compileAll(cat, metrics)
+	ids := make([]int64, len(variants))
+	for i, v := range variants {
+		ids[i] = v.ID
+	}
+	lastDay := day(to.Add(-time.Nanosecond))
+	args := []any{expID, ids, from, to, lastDay}
+	units := `SELECT unit_id, unit_type, min(variant_id) AS variant_id, (min(ts) AT TIME ZONE 'UTC')::date AS first_day, '' AS seg
+		FROM exposures
+		WHERE experiment_id = $1 AND variant_id = ANY($2::bigint[]) AND ts >= $3 AND ts < $4
+		GROUP BY unit_id, unit_type
+		HAVING count(DISTINCT variant_id) = 1`
+	cells, err := momentsOf(ctx, db, units, args, 5, measureIDs, cat.measures)
+	if err != nil {
+		return Segment{}, err
+	}
+	byVariant := map[int64]stats.Moments{}
+	for _, c := range cells {
+		byVariant[c.variant] = addMoments(byVariant[c.variant], c.m)
+	}
+	for i := range variants {
+		variants[i].Units = int64(byVariant[variants[i].ID].N)
+	}
+	return buildSegment("", byVariant, variants, comps, index, alpha), nil
 }

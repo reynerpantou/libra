@@ -271,6 +271,7 @@ export type Status =
 
 export interface Experiment {
   id: number;
+  kind: "ab" | "tuning";
   business_id: number;
   business_key: string;
   business_name: string;
@@ -473,4 +474,129 @@ export interface EventSummary {
     days: { day: string; count: number; value: number }[];
     props: string[];
   }[];
+}
+
+// ---- AB Tuning ----
+export type TuningAlgorithm = "random" | "quasi_random" | "bayesian" | "constrained";
+
+export interface TuningParam {
+  path: string;
+  type: "float" | "int";
+  min: number;
+  max: number;
+  control: number;
+  scale: "linear" | "log";
+  step: number;
+}
+
+export interface TuningConfig {
+  algorithm: TuningAlgorithm;
+  params: TuningParam[];
+  base_params: Record<string, unknown>;
+  objective_metric_id: number;
+  objective_direction: "increase" | "decrease";
+  guardrails: { metric_id: number; max_drop: number }[];
+  arms: number;
+  round_days: number;
+  max_rounds: number;
+  min_units: number;
+  keep_best: boolean;
+}
+
+export interface TuningPrediction {
+  mean: number;
+  sd: number;
+  feasible: number;
+}
+
+export interface TuningArm {
+  variant_id: number;
+  key: string;
+  name: string;
+  is_control?: boolean;
+  values: number[];
+  x?: number[];
+  source: string;
+  predicted?: TuningPrediction;
+}
+
+export interface TuningEstimate {
+  metric_id: number;
+  value: number;
+  rel_diff: number;
+  rel_ci_low: number;
+  rel_ci_high: number;
+  p_value: number;
+  significant: boolean;
+  testable: boolean;
+  verdict: string;
+  holds?: boolean;
+}
+
+export interface TuningArmResult {
+  variant_id: number;
+  units: number;
+  objective?: TuningEstimate;
+  guardrails: TuningEstimate[];
+  obs?: { x: number[]; y: number; var: number };
+}
+
+export interface TuningRound {
+  round: number;
+  status: "planned" | "running" | "analyzed";
+  started_at: string | null;
+  ends_at: string | null;
+  ended_at: string | null;
+  arms: TuningArm[];
+  results: { from: string; to: string; control_units: number; control_value: number; arms: TuningArmResult[]; computed_at: string } | null;
+  note: string;
+}
+
+export interface TuningMetric {
+  id: number;
+  key: string;
+  name: string;
+  format: string;
+  decimals: number;
+  direction: Direction;
+  max_drop?: number;
+}
+
+export interface Tuning {
+  experiment: Experiment;
+  config: TuningConfig;
+  round: number;
+  state: { halton_index?: number; trust?: number };
+  finished_at: string | null;
+  note: string;
+  objective: TuningMetric;
+  guardrails: TuningMetric[];
+  rounds: TuningRound[];
+  best: {
+    variant_id: number;
+    key: string;
+    round: number;
+    values: number[];
+    predicted: TuningPrediction;
+    observed: number;
+    params: Record<string, unknown>;
+  } | null;
+  tested: number;
+  data_through: string | null;
+}
+
+export interface TuningSummary extends Experiment {
+  algorithm: TuningAlgorithm;
+  round: number;
+  max_rounds: number;
+  arms: number;
+  params: string[];
+  objective: string;
+  best_lift: number | null;
+  finished_at: string | null;
+}
+
+export interface SurfacePoint extends TuningPrediction {
+  x: number;
+  y: number;
 }
