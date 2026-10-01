@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/reynerpantou/libra/internal/assign"
@@ -23,6 +24,9 @@ import (
 
 // ErrSeeded means the demo business already exists.
 var ErrSeeded = errors.New(`the demo business "search" already exists`)
+
+// ErrDirty means parts of an earlier demo are left over.
+var ErrDirty = errors.New("parts of an earlier demo (its layers) are still in the database")
 
 type measureSpec struct {
 	key, name, desc, event, agg, valueField string
@@ -184,6 +188,17 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 	if n > 0 {
 		return ErrSeeded
 	}
+	// Leftovers from an earlier demo (e.g. its layers) would clash by name.
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM layers WHERE name IN ('search_ranking', 'search_ui', 'feed_ranking', 'seller_tools', 'market_search')`).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrDirty
+	}
+	users := demoUserIDs(ctx, db)
+	if ownerID == 0 {
+		ownerID = users["bob"] // no owner yet: the demo admin owns the demo
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -215,11 +230,25 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 			return err
 		}
 	}
+	// A second platform with its own "search" business: equal business
+	// keys on two platforms never mix (requests select platform/business).
+	if err := seedMarket(ctx, tx, bids, metricIDs, groupIDs); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO diversions (key, name, description) VALUES
+			('shop_id', 'Shop id', 'Keeps a seller''s shop in one variant: for seller-side features.'),
+			('session_id', 'Session id', 'A new split every app session: for fast UI checks where carry-over doesn''t matter.')
+		ON CONFLICT (key) DO NOTHING`); err != nil {
+		return err
+	}
 	layerIDs := map[string]int64{}
 	for _, l := range []struct{ name, desc, diversion string }{
 		{"search_ranking", "Ranking and relevance experiments (mutually exclusive), split by user", assign.DiversionUser},
 		{"search_ui", "Search result page layout and ads placement, split by device", assign.DiversionDevice},
 		{"feed_ranking", "Recommendation models, split by user", assign.DiversionUser},
+		{"seller_tools", "Seller-side features, split by shop", "shop_id"},
+		{"market_search", "Market App search ranking, split by user", assign.DiversionUser},
 	} {
 		var id int64
 		if err := tx.QueryRowContext(ctx, `INSERT INTO layers (name, description, salt, diversion) VALUES ($1, $2, $3, $4) RETURNING id`,
@@ -329,6 +358,74 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 				{"treatment", "Suggestions", false, 500, map[string]any{"search": map[string]any{"autocomplete": true}}},
 			},
 		},
+		// Every lifecycle state, with data where it makes sense: these run
+		// during the simulated traffic and are paused / stopped afterwards.
+		{
+			"search", "Spelling correction", "Correcting typos before searching reduces zero-result searches.",
+			"search_ranking", assign.StatusActive, "", "", []string{"search/Back end", "search/Front end"}, 300, assign.Targeting{},
+			[]variant{
+				{"control", "No correction", true, 500, map[string]any{"search": map[string]any{"spelling": map[string]any{"correct": false}}}},
+				{"correct", "Auto-correct", false, 500, map[string]any{"search": map[string]any{"spelling": map[string]any{"correct": true, "min_confidence": 0.8}}}},
+			},
+		},
+		{
+			"search", "Search filter chips", "Quick filter chips under the search box raise CTR.",
+			"search_ui", assign.StatusActive, "", "", []string{"search/Front end"}, 300,
+			assign.Targeting{Groups: [][]assign.Rule{{{Attr: "os", Op: "eq", Values: []string{"android"}}, {Attr: "app_version", Op: "version_gte", Values: []string{"10.2.0"}}}}},
+			[]variant{
+				{"control", "No chips", true, 500, map[string]any{"search": map[string]any{"filters": map[string]any{"chips": false}}}},
+				{"chips", "Filter chips", false, 500, map[string]any{"search": map[string]any{"filters": map[string]any{"chips": true, "max": 6}}}},
+			},
+		},
+		{
+			"search", "Voice search entry", "A microphone button in the search box increases searches among new users.",
+			"search_ui", assign.StatusInReview, "", "", []string{"search/Front end"}, 200,
+			assign.Targeting{Groups: [][]assign.Rule{{{Attr: "is_new_user", Op: "eq", Values: []string{"true"}}}}},
+			[]variant{
+				{"control", "No voice", true, 500, map[string]any{"search": map[string]any{"voice": false}}},
+				{"voice", "Voice button", false, 500, map[string]any{"search": map[string]any{"voice": true}}},
+			},
+		},
+		{
+			"search", "Image search", "Searching by photo lifts conversion for fashion queries.",
+			"search_ranking", assign.StatusApproved, "", "", []string{"search/Product"}, 100, assign.Targeting{},
+			[]variant{
+				{"control", "Text only", true, 500, map[string]any{"search": map[string]any{"image_search": false}}},
+				{"image", "Image search", false, 500, map[string]any{"search": map[string]any{"image_search": true}}},
+			},
+		},
+		{
+			"search", "Infinite scroll", "Loading more results on scroll keeps users browsing longer.",
+			"search_ui", assign.StatusRejected, "", "", []string{"search/Front end", "search/Ads health"}, 200, assign.Targeting{},
+			[]variant{
+				{"control", "Pages", true, 500, map[string]any{"search": map[string]any{"pagination": "pages"}}},
+				{"infinite", "Infinite scroll", false, 500, map[string]any{"search": map[string]any{"pagination": "infinite"}}},
+			},
+		},
+		{
+			"search", "Unified ranking signals", "Sharing click signals between search and the feed improves both.",
+			"", assign.StatusActive, assign.DiversionUser, "", []string{"search/Product", "reco/Product"}, 400, assign.Targeting{},
+			[]variant{
+				{"control", "Separate signals", true, 500, map[string]any{"signals": map[string]any{"shared": false}}},
+				{"shared", "Shared signals", false, 500, map[string]any{"signals": map[string]any{"shared": true, "decay_days": 14}}},
+			},
+		},
+		{
+			"search", "Seller coupon nudge", "Nudging sellers to create coupons raises their conversion.",
+			"seller_tools", assign.StatusDraft, "", "", []string{"search/Product"}, 500, assign.Targeting{},
+			[]variant{
+				{"control", "No nudge", true, 500, map[string]any{"seller": map[string]any{"coupon_nudge": false}}},
+				{"nudge", "Nudge", false, 500, map[string]any{"seller": map[string]any{"coupon_nudge": true}}},
+			},
+		},
+		{
+			"market/search", "Market search: price boost", "The price boost that works in Demo Shop also lifts Market App search.",
+			"market_search", assign.StatusActive, "", "", []string{"market/search/Product", "market/search/Back end"}, 1000, assign.Targeting{},
+			[]variant{
+				{"control", "Current formula", true, 500, map[string]any{"search": map[string]any{"ranking": map[string]any{"price_boost": 0}}}},
+				{"boost", "Price boost", false, 500, map[string]any{"search": map[string]any{"ranking": map[string]any{"price_boost": 0.3}}}},
+			},
+		},
 	}
 	expIDs := map[string]int64{}
 	for i, e := range exps {
@@ -388,7 +485,11 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 			}
 		}
 		for pos, v := range e.variants {
-			params, _ := json.Marshal(map[string]any{demoPlatform.key: v.params}) // namespaced by platform
+			nsKey := demoPlatform.key
+			if strings.HasPrefix(e.business, "market/") {
+				nsKey = "market"
+			}
+			params, _ := json.Marshal(map[string]any{nsKey: v.params}) // namespaced by platform
 			var vid int64
 			if err := tx.QueryRowContext(ctx, `INSERT INTO variants (experiment_id, key, name, is_control, weight, params, position) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
 				id, v.key, v.name, v.control, v.weight, params, pos).Scan(&vid); err != nil {
@@ -403,6 +504,9 @@ func Seed(ctx context.Context, db *sql.DB, ownerID int64) error {
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO audit_log (experiment_id, entity, entity_id, actor_id, action, to_status, detail) VALUES ($1, 'experiment', $1, $2, 'seed', $3, '{"note":"created by the demo seeder"}')`,
 			id, owner, e.status); err != nil {
+			return err
+		}
+		if err := applyExtras(ctx, tx, id, e.name, owner, users, bids); err != nil {
 			return err
 		}
 	}
@@ -538,7 +642,7 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 		}
 		users[i] = userProfile{
 			id:       fmt.Sprintf("%s-%06d", o.UserPrefix, i),
-			device:   fmt.Sprintf("dev-%s-%06d", o.UserPrefix[min(len(o.UserPrefix), 5):], i),
+			device:   fmt.Sprintf("dev-%s-%06d", strings.TrimPrefix(o.UserPrefix, "demo-"), i),
 			attrs:    map[string]any{"region": region, "os": os, "device": os, "app_version": fmt.Sprintf("10.%d.0", 1+rng.Intn(5))},
 			activity: 0.15 + 0.5*rng.Float64(),
 			ctr:      0.04 + 0.1*rng.Float64(),
@@ -702,6 +806,14 @@ func effects(params map[string]any, attrs map[string]any) effect {
 			fx.ctr *= 1 + 1.5*bump
 			fx.cvr *= 1 + 0.3*bump
 			fx.latency *= 1 + 0.4*(fresh-0.5)
+		}
+	}
+	// AB Tuning demo: page size — clicks peak around 34 results, each extra
+	// result costs a little latency.
+	if results, ok := search["results"].(map[string]any); ok {
+		if ps, ok := results["page_size"].(float64); ok {
+			fx.ctr *= 1 + 0.09*math.Exp(-math.Pow((ps-34)/12, 2))
+			fx.latency *= 1 + 0.003*(ps-20)
 		}
 	}
 	if ads, ok := search["ads"].(map[string]any); ok {

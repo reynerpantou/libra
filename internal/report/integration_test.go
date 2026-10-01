@@ -3,6 +3,7 @@ package report_test
 import (
 	"context"
 	"database/sql"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -197,12 +198,13 @@ func TestEndToEnd(t *testing.T) {
 	if _, err := pipeline.RunSettled(ctx, db, "test", 0); err != nil {
 		t.Fatal(err)
 	}
-	if after := sumMeasure(t, db, "search_gmv", unit); after-before != 1000 {
+	if after := sumMeasure(t, db, "search_gmv", unit); math.Abs(after-before-1000) > 1e-6 {
 		t.Errorf("late event not reflected: before %v after %v", before, after)
 	}
 
 	// Editing a measure triggers a backfill with the new definition.
-	if _, err := db.Exec(`UPDATE measures SET filters = '[]', needs_backfill = true, updated_at = now() WHERE key = 'search_gmv'`); err != nil {
+	// (Market App has its own search_gmv; only Demo Shop's changes.)
+	if _, err := db.Exec(`UPDATE measures SET filters = '[]', needs_backfill = true, updated_at = now() WHERE key = 'search_gmv' AND business_id = $1`, bizID); err != nil {
 		t.Fatal(err)
 	}
 	ps, err = pipeline.RunSettled(ctx, db, "test", 0)

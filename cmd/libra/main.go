@@ -320,7 +320,8 @@ const usage = `usage:
   libra sign-in-link <username>                print a one-time sign-in link (valid 15 minutes)
   libra api-key <name> <scope>[,<scope>]       create an API key (scopes: runtime, ingest)
   libra pipeline                               run the data pipeline once
-  libra demo [-users N] [-days N]              seed the demo platform (search + reco), simulate traffic, run the pipeline
+  libra demo [-users N] [-days N]              build the full demo (every feature) on an empty database
+  libra reset -yes                             drop every table and all data, then recreate an empty database
   libra demo-tuning [-algorithm A] [-rounds N]  add an AB Tuning study to the demo and play its first rounds
   libra simulate [-platform P] [-business K] [-users N] [-days N] [-seed S]
                                                generate more synthetic traffic for a business`
@@ -387,7 +388,54 @@ func runCommand(db *sql.DB, cfg config.Config, cmd string, args []string) error 
 		}
 		fmt.Printf("pipeline: %d exposures, %d events, %d measures backfilled, %d rows written in %.1fs\n",
 			st.Exposures, st.Events, st.MeasuresBackfill, st.Rows, st.Seconds)
-	case "demo", "simulate":
+	case "demo":
+		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		users := fs.Int("users", 20000, "simulated users on Demo Shop")
+		days := fs.Int("days", 14, "days of history (max 30)")
+		seed := fs.Int64("seed", time.Now().UnixNano()%1_000_000, "random seed")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		var owner int64
+		_ = db.QueryRow(`SELECT id FROM users WHERE is_owner`).Scan(&owner)
+		start := time.Now()
+		fmt.Println("building the demo (takes a few minutes)...")
+		err := simulate.FullDemo(ctx, db, owner, simulate.DemoOptions{Users: *users, Days: *days, Seed: *seed,
+			Log: func(f string, a ...any) { fmt.Printf("  "+f+"\n", a...) }})
+		if errors.Is(err, simulate.ErrSeeded) || errors.Is(err, simulate.ErrDirty) {
+			return fmt.Errorf("%w — the demo needs an empty database: run `make demo-fresh` (drops everything first), or `make reset` then `make demo`", err)
+		}
+		if err != nil {
+			return err
+		}
+		keys := map[string]string{}
+		for _, k := range []struct{ name, scope string }{{"demo-service", "runtime"}, {"demo-events", "ingest"}} {
+			key, err := handlers.NewAPIKey(ctx, db, k.name, []string{k.scope}, 0)
+			if err != nil {
+				return err
+			}
+			keys[k.name] = key.Key
+		}
+		fmt.Printf(`
+demo ready in %s
+
+  Platforms   Demo Shop (shop: search, reco) and Market App (market: search, promo)
+  Experiments every state — draft, in review, approved, rejected, running, paused,
+              stopped, launched (one still ramping), archived; test users, targeting,
+              a multi-business experiment, traffic and launch rollouts in progress
+  AB Tuning   "Ranking weights auto-tune" (running, Bayesian) and
+              "Result page size" (finished, quasi-random)
+  Team        bob (admin), alice, dina, evan (editors), carol (viewer)
+              sign in as one: make link user=alice
+  API keys    shown once —
+              runtime  demo-service  %s
+              ingest   demo-events   %s
+
+`, time.Since(start).Round(time.Second), keys["demo-service"], keys["demo-events"])
+		if owner == 0 {
+			fmt.Println("No owner yet: start the server (make dev-api) and open the setup link it prints, or run make claim.")
+		}
+	case "simulate":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		users := fs.Int("users", 20000, "simulated users")
 		days := fs.Int("days", 14, "days of history (max 30)")
@@ -396,17 +444,6 @@ func runCommand(db *sql.DB, cfg config.Config, cmd string, args []string) error 
 		seed := fs.Int64("seed", time.Now().UnixNano(), "random seed")
 		if err := fs.Parse(args); err != nil {
 			return err
-		}
-		if cmd == "demo" {
-			var owner int64
-			_ = db.QueryRow(`SELECT id FROM users WHERE is_owner`).Scan(&owner)
-			if err := simulate.Seed(ctx, db, owner); err != nil && !errors.Is(err, simulate.ErrSeeded) {
-				return err
-			} else if err == nil {
-				fmt.Println(`seeded platform "shop" with businesses "search" and "reco": metrics, metric groups, 3 layers and 5 experiments`)
-			} else {
-				fmt.Println(`business "search" already exists; adding traffic`)
-			}
 		}
 		fmt.Printf("simulating %d users over %d days...\n", *users, *days)
 		st, err := simulate.Generate(ctx, db, simulate.Options{Platform: *platform, Business: *business, Users: *users, Days: *days, Seed: *seed})
@@ -419,6 +456,22 @@ func runCommand(db *sql.DB, cfg config.Config, cmd string, args []string) error 
 			return err
 		}
 		fmt.Printf("pipeline: %d assignments, %d measure rows in %.1fs\n", ps.Assignments, ps.Rows, ps.Seconds)
+	case "reset":
+		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		yes := fs.Bool("yes", false, "really drop everything")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if !*yes {
+			return errors.New("reset drops every table and all data in this database; run `libra reset -yes` to confirm")
+		}
+		if _, err := db.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
+			return fmt.Errorf("drop: %w", err)
+		}
+		if err := database.Migrate(db); err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+		fmt.Println("dropped everything and recreated an empty Libra database")
 	case "demo-tuning":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		algorithm := fs.String("algorithm", "bayesian", "random, quasi_random, bayesian or constrained")

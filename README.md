@@ -28,7 +28,7 @@ for your services, and the data pipeline, all backed by Postgres.
 make setup                      # frontend deps
 make build                      # builds the SPA and ./libra
 docker compose up -d postgres   # or point LIBRA_DATABASE_URL at any Postgres
-./libra demo                    # sample "search" business + 14 days of simulated traffic
+./libra demo                    # the full demo (every feature) on an empty database
 ./libra                         # serve on :8080 and print the owner setup link
 ```
 
@@ -37,11 +37,29 @@ API at `/libra/api/…` (anything else redirects there), so other apps can share
 the domain. With Google sign-in, register
 `<LIBRA_PUBLIC_URL>/libra/api/auth/google/callback` as the redirect URI.
 
-`libra demo` creates a **Search** business with the metrics below, two traffic
-layers, three experiments, and about 700k simulated events. The simulated
-treatments have real built-in effects, so the reports show real results. For
-example, "Ranking formula v2" raises CTR by 5%, and the report recovers that
-figure.
+`libra demo` (or `make demo`) builds a demo of every feature in about three
+minutes:
+
+- two platforms, **Demo Shop** (`search`, `reco`) and **Market App** (`search`,
+  `promo`) — both have a `search` business, to show that equal keys don't
+  collide;
+- metrics, measures and metric groups (platform defaults included), custom
+  diversions (`shop_id`, `session_id`), shared and dedicated layers;
+- 17 experiments covering every state: draft, in review (reviewers invited),
+  approved, rejected (with the reviewer's note), running, paused, stopped,
+  launched (one still ramping out), archived. They also cover targeting rules,
+  test users, an 8-variant test, a multi-business experiment, and a traffic
+  ramp in progress;
+- about two million simulated events with built-in effects, so the reports
+  show real results ("Ranking formula v2" raises CTR by about 5%, and the
+  report recovers it);
+- two AB Tuning studies: "Ranking weights auto-tune" (Bayesian, running round
+  7) and "Result page size" (quasi-random, finished, ready to launch);
+- a demo team (bob admin; alice, dina, evan editors; carol viewer) and two API
+  keys, printed once.
+
+The demo needs an empty database. `make reset` drops everything (it asks
+first) and `make demo-fresh` resets and rebuilds the demo.
 
 With Docker only: `cp .env.example .env`, set `POSTGRES_PASSWORD`, then
 `docker compose up --build`, followed by
@@ -223,7 +241,8 @@ libra list-users                             list accounts
 libra sign-in-link <username>                one-time sign-in link (15 minutes)
 libra api-key <name> <scope>[,<scope>]       create an API key (runtime, ingest)
 libra pipeline                               run the data pipeline once
-libra demo [-users N] [-days N]              seed the demo business and simulate traffic
+libra demo [-users N] [-days N]              build the full demo on an empty database
+libra reset -yes                             drop every table and all data (make reset asks first)
 libra simulate [-business K] [-users N] [-days N] [-seed S]
 ```
 
