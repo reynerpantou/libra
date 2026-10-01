@@ -11,6 +11,7 @@ import { trafficPct } from "../lib/format";
 import { useAsync } from "../lib/hooks";
 import type { Targeting, Variant } from "../lib/types";
 import { TargetingEditor } from "../components/Targeting";
+import { ScheduleFields, fmtWhen } from "../components/Schedule";
 
 
 interface VariantDraft extends Omit<Variant, "params"> {
@@ -44,6 +45,8 @@ export default function ExperimentForm() {
   const [businessIds, setBusinessIds] = useState<number[]>([]);
   const businessId = businessIds[0] ?? 0;
   const [confirming, setConfirming] = useState(false);
+  const [plannedStart, setPlannedStart] = useState("");
+  const [endAt, setEndAt] = useState("");
   const [layerId, setLayerId] = useState(0);
   const [name, setName] = useState("");
   const [hypothesis, setHypothesis] = useState("");
@@ -70,6 +73,8 @@ export default function ExperimentForm() {
     setHypothesis(e.hypothesis);
     setDescription(e.description);
     setTraffic(e.traffic_target);
+    setPlannedStart(e.planned_start ?? "");
+    setEndAt(e.end_at ?? "");
     setTargeting(e.targeting);
     setGroupIds(e.metric_group_ids ?? []);
     setVariants(
@@ -152,6 +157,8 @@ export default function ExperimentForm() {
       traffic_target: traffic,
       targeting,
       metric_group_ids: groupIds,
+      planned_start: plannedStart || null,
+      end_at: endAt || null,
       // Parameters are namespaced by the platform key.
       variants: variants.map(({ paramsText, ...v }) => ({ ...v, weight: Number(v.weight), params: { [platformKey]: JSON.parse(paramsText || "{}") } })),
     };
@@ -406,6 +413,11 @@ export default function ExperimentForm() {
         </section>
 
         <section className="card card-pad stack">
+          <h2>Schedule</h2>
+          <ScheduleFields start={plannedStart} end={endAt} onStart={setPlannedStart} onEnd={setEndAt} startLocked={locked} />
+        </section>
+
+        <section className="card card-pad stack">
           <div className="row-between">
             <div>
               <h2>Variants</h2>
@@ -535,6 +547,10 @@ export default function ExperimentForm() {
                     {trafficPct(Number(v.weight))}
                   </div>
                 ))}
+              </dd>
+              <dt>Schedule</dt>
+              <dd>
+                {plannedStart ? `Start ${fmtWhen(plannedStart)}` : "Start whenever it's approved"} · {endAt ? `ends ${fmtWhen(endAt)}` : "no end date"}
               </dd>
               <dt>Metric groups</dt>
               <dd>

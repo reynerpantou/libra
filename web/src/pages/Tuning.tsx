@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Pager } from "../components/Pager";
+import { ListFilters, filterArgs } from "../components/ListFilters";
 import { Empty, ErrorBox, Icon, Loading, StatusBadge } from "../components/ui";
 import { api } from "../lib/api";
 import { useCan } from "../lib/auth";
@@ -26,7 +27,8 @@ export default function Tuning() {
   const query = useDebounced(q, 250);
   const page = Math.max(1, Number(sp.get("page")) || 1);
   const size = Number(sp.get("size")) || 25;
-  const list = useAsync(() => api.tunings({ status, q: query, page, size }), [status, query, page, size]);
+  const f = filterArgs(sp);
+  const list = useAsync(() => api.tunings({ ...f, status, q: query, page, size }), [JSON.stringify(f), status, query, page, size]);
   const set = (k: string, v: string) => {
     const n = new URLSearchParams(sp);
     if (v) n.set(k, v);
@@ -60,6 +62,9 @@ export default function Tuning() {
             ))}
           </div>
           <input className="input" style={{ width: 260 }} placeholder="Search name or id" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <div style={{ padding: "0 16px 12px" }}>
+          <ListFilters params={sp} setParams={setSp} />
         </div>
         <ErrorBox error={list.error} />
         {list.loading && !list.data ? (

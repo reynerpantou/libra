@@ -12,6 +12,7 @@ import { useAsync } from "../lib/hooks";
 import { algorithmName, algorithms, sourceLabel } from "../lib/tuning";
 import type { SurfacePoint, Tuning, TuningEstimate, TuningRound } from "../lib/types";
 import { Header, History } from "./ExperimentDetail";
+import { fmtWhen, relative } from "../components/Schedule";
 
 type Tab = "results" | "rounds" | "setup" | "history";
 
@@ -59,7 +60,12 @@ export default function TuningDetail() {
         editable={["draft", "approved", "rejected"].includes(e.status)}
         launchOptions={launchOptions}
         defaultLaunch={t.best?.variant_id}
-        extra={<AdvanceButton t={t} onDone={q.reload} />}
+        extra={
+          <>
+            <AddRoundsButton t={t} onDone={q.reload} />
+            <AdvanceButton t={t} onDone={q.reload} />
+          </>
+        }
       />
       <StatusStrip t={t} />
       <Tabs<Tab>
@@ -77,6 +83,67 @@ export default function TuningDetail() {
       {tab === "setup" && <Setup t={t} />}
       {tab === "history" && <History id={e.id} version={e.updated_at} />}
     </div>
+  );
+}
+
+function AddRoundsButton({ t, onDone, small }: { t: Tuning; onDone: () => void; small?: boolean }) {
+  const canEdit = useCan("editor");
+  const [open, setOpen] = useState(false);
+  const [n, setN] = useState("2");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (!canEdit || t.finished_at || ["stopped", "launched", "archived"].includes(t.experiment.status)) return null;
+  return (
+    <>
+      <button className={`btn ${small ? "btn-sm" : ""}`} onClick={() => setOpen(true)}>
+        <Icon name="plus" /> Extend
+      </button>
+      {open && (
+        <Modal
+          title="Extend the study"
+          onClose={() => setOpen(false)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setOpen(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  setError("");
+                  try {
+                    await api.extend(t.experiment.id, { rounds: Number(n) || 1 });
+                    setOpen(false);
+                    onDone();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Add rounds
+              </button>
+            </>
+          }
+        >
+          <p className="muted small">
+            The study has {t.config.max_rounds} rounds of {t.config.round_days} day{t.config.round_days > 1 ? "s" : ""}. Adding rounds keeps the search going
+            from where it is.
+          </p>
+          <div className="row">
+            <input className="input" type="number" min={1} max={50} style={{ width: 100 }} value={n} onChange={(e) => setN(e.target.value)} />
+            <span className="small muted">
+              more round{n === "1" ? "" : "s"} → {t.config.max_rounds + (Number(n) || 0)} in total, about {(Number(n) || 0) * t.config.round_days} more day
+              {(Number(n) || 0) * t.config.round_days === 1 ? "" : "s"}
+            </span>
+          </div>
+          <ErrorBox error={error} />
+        </Modal>
+      )}
+    </>
   );
 }
 
@@ -139,7 +206,20 @@ function AdvanceButton({ t, onDone }: { t: Tuning; onDone: () => void }) {
 function StatusStrip({ t }: { t: Tuning }) {
   const cur = t.rounds.find((r) => r.round === t.round);
   const done = t.rounds.filter((r) => r.status === "analyzed").length;
+  // The study ends when its last round does.
+  const expectedEnd =
+    !t.finished_at && cur?.status === "running" && cur.ends_at
+      ? new Date(new Date(cur.ends_at).getTime() + (t.config.max_rounds - t.round) * t.config.round_days * 86400000).toISOString()
+      : null;
+  const endingSoon = expectedEnd && t.round >= t.config.max_rounds && new Date(expectedEnd).getTime() - Date.now() < 86400000;
   return (
+    <>
+    {endingSoon && (
+      <div className="alert alert-warn small row-between" style={{ marginBottom: 12, gap: 10 }}>
+        <span>The last round ends {relative(expectedEnd!)} — the study stops then unless you add rounds.</span>
+        <AddRoundsButton t={t} onDone={() => window.location.reload()} small />
+      </div>
+    )}
     <section className="card card-pad row" style={{ gap: 24, flexWrap: "wrap", marginBottom: 12 }}>
       <div>
         <div className="small faint">Progress</div>
@@ -181,8 +261,21 @@ function StatusStrip({ t }: { t: Tuning }) {
         <div className="small faint">Data through</div>
         <b>{t.data_through ? ago(t.data_through) : "—"}</b>
       </div>
+      {expectedEnd && (
+        <div>
+          <div className="small faint">Expected end</div>
+          <b title={fmtWhen(expectedEnd)}>{relative(expectedEnd)}</b>
+        </div>
+      )}
+      {!t.experiment.started_at && t.experiment.planned_start && (
+        <div>
+          <div className="small faint">Planned start</div>
+          <b title={fmtWhen(t.experiment.planned_start)}>{relative(t.experiment.planned_start)}</b>
+        </div>
+      )}
       {t.note && <div className="small muted" style={{ flexBasis: "100%" }}>{t.note}</div>}
     </section>
+    </>
   );
 }
 
