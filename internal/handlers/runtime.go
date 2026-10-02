@@ -114,7 +114,7 @@ func (s *Server) Resolve(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC()
 		attrs := serving.DimensionAttrs(req.Attrs)
 		for _, h := range res.Hits {
-			if h.Source == assign.SourceTraffic {
+			if h.Reason == assign.ReasonInExperiment {
 				s.Exposures.Log(serving.Exposure{ExperimentID: h.ExperimentID, VariantID: h.VariantID, UnitID: h.UnitID, UnitType: h.UnitType, TS: now, Attrs: attrs})
 			}
 		}

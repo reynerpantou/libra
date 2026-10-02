@@ -701,7 +701,7 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 			fx := effects(ours, u.attrs)
 			for _, h := range res.Hits {
 				key := fmt.Sprintf("%d:%s", h.ExperimentID, h.UnitID)
-				if h.Source == assign.SourceTraffic && !exposed[key] {
+				if h.Reason == assign.ReasonInExperiment && !exposed[key] {
 					exposed[key] = true
 					exposures = append(exposures, serving.Exposure{
 						ExperimentID: h.ExperimentID, VariantID: h.VariantID, UnitID: h.UnitID, UnitType: h.UnitType, TS: ts,

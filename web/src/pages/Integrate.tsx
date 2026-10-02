@@ -149,7 +149,7 @@ app logs its events with variant_ids · backend forwards variant_ids to downstre
   "variant_ids": [482913057716204],
   "hits": [{"experiment_id": 730152948816377, "experiment": "Ranking formula v2",
             "variant_id": 482913057716204, "variant": "treatment",
-            "source": "experiment", "unit_type": "user_id", "unit_id": "user-42"}]
+            "status": "active", "reason": "in_experiment", "unit_type": "user_id", "unit_id": "user-42"}]
 }`}</pre>
           <p className="muted small">
             <code>variant_ids</code> lists every variant the unit got (experiments, whitelists and launches). Experiment and variant ids are random

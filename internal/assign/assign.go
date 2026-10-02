@@ -32,18 +32,19 @@ const Buckets = 1000
 
 // Statuses an experiment can be in.
 const (
-	StatusDraft     = "draft"
-	StatusInReview  = "in_review"
-	StatusApproved  = "approved"
-	StatusActive    = "active"
-	StatusPaused    = "paused"
-	StatusStopped   = "stopped"
-	StatusLaunched  = "launched"
-	StatusArchived  = "archived"
-	StatusRejected  = "rejected"
-	SourceTraffic   = "experiment"
-	SourceWhitelist = "whitelist"
-	SourceLaunch    = "launch"
+	StatusDraft    = "draft"
+	StatusInReview = "in_review"
+	StatusApproved = "approved"
+	StatusActive   = "active"
+	StatusPaused   = "paused"
+	StatusStopped  = "stopped"
+	StatusLaunched = "launched"
+	StatusArchived = "archived"
+	StatusRejected = "rejected"
+	// Why a unit got a variant (Hit.Reason).
+	ReasonInExperiment = "in_experiment" // bucketed into the experiment's traffic
+	ReasonTestUser     = "test_user"     // whitelisted as a test unit
+	ReasonLaunched     = "launched"      // the experiment's launched config
 )
 
 // Diversion is which id a layer randomizes on. user_id and device_id are
@@ -351,7 +352,8 @@ type Hit struct {
 	Experiment   string `json:"experiment"`
 	VariantID    int64  `json:"variant_id"`
 	Variant      string `json:"variant"`
-	Source       string `json:"source"`    // experiment | whitelist | launch
+	Status       string `json:"status"`    // the experiment's status: active, launched, …
+	Reason       string `json:"reason"`    // in_experiment | test_user | launched
 	UnitType     string `json:"unit_type"` // the id this assignment is keyed on
 	UnitID       string `json:"unit_id,omitempty"`
 }
@@ -414,7 +416,7 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 		// finished — including before it starts, which is how QA checks it.
 		if vid, ok := e.Whitelist[unit]; ok && unit != "" && whitelistable(e.Status) {
 			if v := variantByID(e, vid); v != nil {
-				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, SourceWhitelist, diversion, unit})
+				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, e.Status, ReasonTestUser, diversion, unit})
 				assigned = append(assigned, struct {
 					e *Experiment
 					v *Variant
@@ -446,7 +448,7 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 				}
 			}
 			if v := variantByID(e, e.LaunchedVar); v != nil {
-				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, SourceLaunch, diversion, unit})
+				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, e.Status, ReasonLaunched, diversion, unit})
 				launched = append(launched, struct {
 					e *Experiment
 					v *Variant
@@ -486,7 +488,7 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 			record("not_in_traffic", fmt.Sprintf("variant bucket %d is beyond the variant weights", vb))
 			continue
 		}
-		res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, SourceTraffic, diversion, unit})
+		res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, e.Status, ReasonInExperiment, diversion, unit})
 		assigned = append(assigned, struct {
 			e *Experiment
 			v *Variant
@@ -872,8 +874,10 @@ func flatten(prefix string, v any, out map[string]any) {
 		}
 		return
 	}
-	if len(obj) == 0 && prefix != "" {
-		out[prefix] = obj
+	// An empty object sets nothing: params merge field by field, so {} (e.g.
+	// a control that keeps the defaults: {"shop": {}}) must not claim the
+	// path above every field.
+	if len(obj) == 0 {
 		return
 	}
 	for k, vv := range obj {
