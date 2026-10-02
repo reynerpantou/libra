@@ -253,7 +253,7 @@ func TestDeviceDiversion(t *testing.T) {
 	if len(a.Hits) != 1 || a.Hits[0].UnitType != DiversionDevice || a.Hits[0].UnitID != "dev-7" || a.Hits[0].Variant != b.Hits[0].Variant {
 		t.Errorf("device assignment should follow the device: %+v %+v", a.Hits, b.Hits)
 	}
-	if w := s.Resolve(Request{DeviceID: "dev-qa"}, false); w.Hits[0].Source != SourceWhitelist {
+	if w := s.Resolve(Request{DeviceID: "dev-qa"}, false); w.Hits[0].Reason != ReasonTestUser {
 		t.Errorf("device whitelist: %+v", w.Hits)
 	}
 }
@@ -367,8 +367,26 @@ func TestLaunchAppliesToEveryone(t *testing.T) {
 	s := NewSnapshot(1, []*Layer{{ID: 1, Salt: "1", Diversion: "shop_id"}}, []*Experiment{e})
 	for _, req := range []Request{{}, {UserID: "u1"}, {DeviceID: "d1"}, {IDs: map[string]string{"other": "x"}}} {
 		r := s.Resolve(req, false)
-		if len(r.Hits) != 1 || r.Hits[0].Source != SourceLaunch {
+		if len(r.Hits) != 1 || r.Hits[0].Reason != ReasonLaunched {
 			t.Errorf("request %+v: hits %+v", req, r.Hits)
 		}
+	}
+}
+
+// An empty object (a control that keeps the defaults) sets nothing, so it
+// never conflicts with another experiment's fields under it.
+func TestEmptyObjectSetsNothing(t *testing.T) {
+	if p := FlattenParams(map[string]any{"shop": map[string]any{}}); len(p) != 0 {
+		t.Fatalf("empty object flattened to %v", p)
+	}
+	m := newMerger()
+	m.apply(1, map[string]any{"shop": map[string]any{}}, false)
+	m.apply(2, map[string]any{"shop": map[string]any{"recom": map[string]any{"v": "1"}}}, false)
+	if len(m.conflicts) != 0 {
+		t.Fatalf("unexpected conflicts %v", m.conflicts)
+	}
+	got := m.result()["shop"].(map[string]any)["recom"].(map[string]any)["v"]
+	if got != "1" {
+		t.Fatalf("value lost: %v", m.result())
 	}
 }

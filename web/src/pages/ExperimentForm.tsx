@@ -485,6 +485,7 @@ export default function ExperimentForm() {
                     platformName={business?.platform_name ?? platformOptions.find((o) => o.value === platformKey)?.label ?? ""}
                   >
                   <JsonEditor
+                    stringTools
                     disabled={locked}
                     invalid={!!paramErrors[i]}
                     value={v.paramsText}

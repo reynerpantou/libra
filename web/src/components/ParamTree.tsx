@@ -1,4 +1,5 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
+import { parseJsonString } from "./JsonView";
 import { Link } from "react-router-dom";
 import type { ParamUse } from "../lib/types";
 import { Icon, StatusBadge } from "./ui";
@@ -64,10 +65,42 @@ export function ParamTree({
         </>
       );
     }
+    if (typeof v === "string") {
+      const parsed = parseJsonString(v);
+      if (parsed !== undefined) return <JsonStr raw={v} parsed={parsed} pad={pad} />;
+    }
     return <span className={typeof v === "string" ? "pstr" : "pval"}>{JSON.stringify(v)}</span>;
   };
 
   return <pre className="ptree">{render(value, "", 0)}</pre>;
+}
+
+// JsonStr: a string that holds JSON. The JSON tag shows it decoded (marked
+// as such — it's still a string to the service reading it).
+function JsonStr({ raw, parsed, pad }: { raw: string; parsed: unknown; pad: string }) {
+  const [open, setOpen] = useState(false);
+  const tag = (
+    <button type="button" className="jt-jsonstr" onClick={() => setOpen(!open)} title={open ? "Show as the string it is" : "Decode this JSON string"}>
+      {open ? "▾ decoded JSON string" : "JSON ▸"}
+    </button>
+  );
+  if (!open)
+    return (
+      <>
+        <span className="pstr">{JSON.stringify(raw)}</span> {tag}
+      </>
+    );
+  const body = JSON.stringify(parsed, null, 2)
+    .split("\n")
+    .map((l) => pad + "  " + l)
+    .join("\n");
+  return (
+    <>
+      {tag}
+      {"\n"}
+      <span className="ptree-decoded">{body}</span>
+    </>
+  );
 }
 
 const relationText: Record<ParamUse["relation"], string> = {

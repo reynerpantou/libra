@@ -415,7 +415,8 @@ export interface Hit {
   experiment: string;
   variant_id: number;
   variant: string;
-  source: "experiment" | "whitelist" | "launch";
+  status: Status; // the experiment's status
+  reason: "in_experiment" | "test_user" | "launched"; // why the unit got this variant
   unit_type: Diversion;
   unit_id?: string;
 }

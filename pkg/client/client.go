@@ -84,7 +84,8 @@ type Hit struct {
 	Experiment   string `json:"experiment"`
 	VariantID    int64  `json:"variant_id"`
 	Variant      string `json:"variant"`
-	Source       string `json:"source"`
+	Status       string `json:"status"`    // the experiment's status
+	Reason       string `json:"reason"`    // in_experiment | test_user | launched
 	UnitType     string `json:"unit_type"` // user_id | device_id: which id the assignment used
 	UnitID       string `json:"unit_id"`
 }
