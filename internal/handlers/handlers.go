@@ -30,6 +30,7 @@ type Server struct {
 }
 
 func New(db *sql.DB, cfg config.Config, store *serving.Store, logger *serving.Logger, sched *pipeline.Scheduler) *Server {
+	appURL = cfg.AppURL()
 	s := &Server{
 		DB: db, Cfg: cfg, ClientIP: middleware.ClientIP(cfg.TrustedProxies), Providers: map[string]*sso.Provider{},
 		Store: store, Exposures: logger, Pipeline: sched,

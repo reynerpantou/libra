@@ -52,16 +52,14 @@ export default function Integrate() {
           </p>
           <ul className="small muted" style={{ margin: 0, paddingLeft: 18 }}>
             <li>
-              <b>abtest/experiments</b>: <code>platform</code> and <code>business</code> each take <code>""</code> or <code>"all"</code> (everything), one key, a
-              comma list (<code>{several ? `"${list.slice(0, 2).map((p) => p.key).join(",")}"` : `"${P},other"`}</code>) or a JSON array (
-              <code>{`["${P}", "…"]`}</code>). Leave both as <code>"all"</code> for a whole-company config, or narrow down to just what the page needs.
-            </li>
-            <li>
-              <b>No collisions between platforms.</b> A business always belongs to its platform, so Libra resolves every business to a{" "}
-              <code>platform/business</code> pair. A bare key such as <code>"{B}"</code> with several platforms selected means{" "}
-              <i>that business on each selected platform that has it</i>; write <code>"{P}/{B}"</code> to pick exactly one. The response lists what was
-              resolved in <code>platforms</code> and <code>businesses</code>, and params stay under each platform's key, so two platforms' <code>{B}</code>{" "}
-              never overwrite each other.
+              <b>abtest/experiments</b> takes a required <code>scope</code>: which platforms, and which of each platform's businesses, the caller wants.
+              Each business is named <i>under its platform</i>, so equal keys on two platforms can't mix and a typo can't silently match the wrong one:
+              <pre className="code" style={{ margin: "6px 0" }}>{`"scope": {"${P}": ["${B}"]}                    // one business
+"scope": {"${P}": "all"}                       // a whole platform
+"scope": {"${P}": ["${B}", "…"], "other": "all"} // mix per platform
+"scope": "all"                              // every platform (rarely what a service wants)`}</pre>
+              Unknown platforms or businesses are rejected with the valid keys listed, and a request without a scope is rejected — nobody gets every
+              experiment by accident. The response echoes the <code>scope</code> it served.
             </li>
             <li>
               <b>events</b>: <code>business</code> is required; add <code>platform</code> when the business key exists on more than one platform.
@@ -138,26 +136,25 @@ app logs its events with variant_ids · backend forwards variant_ids to downstre
           </p>
           <pre className="code">{`curl -X POST ${origin}/api/v1/abtest/experiments \\
   -H "Authorization: Bearer $LIBRA_KEY" -H "Content-Type: application/json" \\
-  -d '{"platform": "${P}", "business": "${B}", "user_id": "user-42", "device_id": "dev-9f3a",
+  -d '{"scope": {"${P}": ["${B}"]}, "user_id": "user-42", "device_id": "dev-9f3a",
        "attrs": {"region": "ID", "os": "android", "app_version": "10.3.0"}}'
 
 {
   "user_id": "user-42", "device_id": "dev-9f3a",
-  "platforms": ["${P}"], "businesses": ["${P}/${B}"],
+  "scope": {"${P}": ["${B}"]},
   "snapshot_version": 12,
   "params": {"${P}": {"search": {"ranking": {"formula": "ctr * cvr * price_score", "price_boost": 0.3}}}},
-  "variant_ids": [482913057716204],
-  "hits": [{"experiment_id": 730152948816377, "experiment": "Ranking formula v2",
-            "variant_id": 482913057716204, "variant": "treatment",
-            "status": "active", "reason": "in_experiment", "unit_type": "user_id", "unit_id": "user-42"}]
+  "variant_ids": [48291305],
+  "hits": [{"experiment_id": 730152948816377, "experiment_name": "Ranking formula v2",
+            "variant_id": 48291305, "variant_key": "treatment", "variant_name": "Price boost",
+            "status": "active", "reason": "in_experiment", "unit_type": "user_id", "unit_id": "user-42",
+            "libra_url": "${origin}/experiments/730152948816377"}]
 }`}</pre>
           <p className="muted small">
-            <code>variant_ids</code> lists every variant the unit got (experiments, whitelists and launches). Experiment and variant ids are random
-            15-digit numbers that never change, so log <code>variant_ids</code> with your own events or pass them to other services: anyone can look a
-            variant up in Libra, and the Debug tools page replays the exact request. Several platforms at once:
+            <code>variant_ids</code> lists every variant the unit got (experiments, whitelists and launches). Ids are random and never change —
+            experiments 15 digits, variants 8, so log <code>variant_ids</code> with your own events or pass them to other services: anyone can look a
+            variant up in Libra, and the Debug tools page replays the exact request. <code>libra_url</code> links each hit to its experiment.
           </p>
-          <pre className="code">{`-d '{"platform": "${several ? list.slice(0, 2).map((p) => p.key).join(",") : P}", "business": "all", "user_id": "user-42"}'
--d '{"platform": ${JSON.stringify(several ? list.slice(0, 2).map((p) => p.key) : [P])}, "business": "${P}/${B}", "user_id": "user-42"}'`}</pre>
           <p className="muted small">
             Send both <code>user_id</code> and <code>device_id</code> when you have them: each layer splits traffic by one of them (its{" "}
             <i>diversion</i>), and an experiment whose id is missing from the request is skipped.
@@ -237,7 +234,7 @@ app logs its events with variant_ids · backend forwards variant_ids to downstre
           <pre className="code">{`import "github.com/reynerpantou/libra/pkg/client"
 
 c := client.New("${origin}", os.Getenv("LIBRA_KEY"))
-res, err := c.GetExperiments(ctx, client.ResolveRequest{Platform: "${P}", Business: "${B}", UserID: "user-42", DeviceID: "dev-9f3a",
+res, err := c.GetExperiments(ctx, client.ResolveRequest{Scope: map[string]any{"${P}": []string{"${B}"}}, UserID: "user-42", DeviceID: "dev-9f3a",
     Attrs: map[string]any{"region": "ID"}})
 formula := res.String("${P}.search.ranking.formula", "ctr * cvr")
 

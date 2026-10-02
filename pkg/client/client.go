@@ -4,7 +4,7 @@
 //
 //	c := client.New("https://example.com/libra", os.Getenv("LIBRA_KEY"))
 //	defer c.Close()
-//	res, err := c.Resolve(ctx, client.ResolveRequest{UserID: "user-42", DeviceID: "dev-9f3a", Platform: "shop", Business: "search"})
+//	res, err := c.Resolve(ctx, client.ResolveRequest{UserID: "user-42", DeviceID: "dev-9f3a", Scope: map[string]any{"shop": "search"}})
 //	formula := res.String("search.ranking.formula", "ctr * cvr")
 //	c.Track(client.Event{Platform: "shop", Business: "search", Event: "order", UserID: "user-42", Value: 35.9})
 package client
@@ -70,20 +70,21 @@ type ResolveRequest struct {
 	UserID   string            `json:"user_id,omitempty"`
 	DeviceID string            `json:"device_id,omitempty"`
 	IDs      map[string]string `json:"ids,omitempty"` // other diversions, e.g. {"shop_id": "s-1"}
-	// Platform and Business: "" or "all" for everything, one key or a comma
-	// list ("tokopedia,tiktokshop"). A business can be qualified as
-	// "platform/business" to pick one platform's.
-	Platform    string         `json:"platform,omitempty"`
-	Business    string         `json:"business,omitempty"`
+	// Scope (required): "all", or platform -> "all" | a business key |
+	// []string of business keys, e.g.
+	//   map[string]any{"shop": []string{"search", "reco"}, "market": "all"}
+	Scope       any            `json:"scope"`
 	Attrs       map[string]any `json:"attrs,omitempty"`
 	LogExposure *bool          `json:"log_exposure,omitempty"`
 }
 
 type Hit struct {
 	ExperimentID int64  `json:"experiment_id"`
-	Experiment   string `json:"experiment"`
+	Experiment   string `json:"experiment_name"`
 	VariantID    int64  `json:"variant_id"`
-	Variant      string `json:"variant"`
+	Variant      string `json:"variant_key"`
+	VariantName  string `json:"variant_name"`
+	URL          string `json:"libra_url"` // the experiment in Libra
 	Status       string `json:"status"`    // the experiment's status
 	Reason       string `json:"reason"`    // in_experiment | test_user | launched
 	UnitType     string `json:"unit_type"` // user_id | device_id: which id the assignment used
@@ -93,8 +94,7 @@ type Hit struct {
 type ResolveResponse struct {
 	UserID          string         `json:"user_id"`
 	DeviceID        string         `json:"device_id"`
-	Platforms       []string       `json:"platforms"`  // the platforms resolved from the request
-	Businesses      []string       `json:"businesses"` // "platform/business" pairs
+	Scope           map[string]any `json:"scope"` // the scope served: platform -> "all" or its businesses
 	SnapshotVersion int64          `json:"snapshot_version"`
 	Params          map[string]any `json:"params"`
 	VariantIDs      []int64        `json:"variant_ids"` // every variant the unit got: log them with your events

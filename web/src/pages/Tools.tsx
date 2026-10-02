@@ -52,25 +52,15 @@ function Diagnose() {
   const [rows, setRows] = useState<{ key: string; value: string }[]>([{ key: "user_id", value: "" }]);
   const ids = Object.fromEntries(rows.filter((r) => r.key && r.value.trim()).map((r) => [r.key, r.value.trim()]));
   // Empty means "all", like the runtime API.
-  const [platformSel, setPlatformSel] = useState<string[]>([]);
-  const [businessSel, setBusinessSel] = useState<string[]>([]);
+  // The scope: one row per platform, with all its businesses or a few.
+  // No rows = "all" (every platform).
+  const [scope, setScope] = useState<{ platform: string; businesses: string[] }[]>([]);
   const [attrs, setAttrs] = useState('{\n  "region": "ID",\n  "os": "android"\n}');
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<{ version: number; hits: Hit[]; params: Record<string, unknown>; trace: Step[] } | null>(null);
   const [sent, setSent] = useState<{ body: ResolveBody; response: Record<string, unknown> } | null>(null);
   const platforms = useAsync(() => api.platforms(), []);
-  const chosenPlatforms = (platforms.data ?? []).filter((p) => platformSel.length === 0 || platformSel.includes(p.key));
-  // A business key is qualified with its platform when several platforms
-  // are in play, so equal keys on different platforms stay distinct.
-  const qualify = platformSel.length !== 1;
-  const businessOptions = chosenPlatforms.flatMap((p) =>
-    p.businesses.map((b) => ({
-      value: qualify ? `${p.key}/${b.key}` : b.key,
-      label: qualify ? `${p.name} › ${b.name}` : b.name,
-      hint: qualify ? `${p.key}/${b.key}` : b.key,
-    }))
-  );
   const run = async () => {
     setError("");
     let parsed: Record<string, unknown> = {};
@@ -82,7 +72,7 @@ function Diagnose() {
     }
     setBusy(true);
     try {
-      const body = resolveBody(ids, platformSel, businessSel, parsed);
+      const body = resolveBody(ids, scope, parsed);
       const r = await api.diagnose(body);
       setRes({ version: r.snapshot_version, ...r.result, trace: r.result.trace ?? [] });
       setSent({ body, response: r.response });
@@ -138,23 +128,41 @@ function Diagnose() {
           </div>
           <div className="small faint">Each layer splits by one diversion; experiments whose id you don't send are skipped (the trace says so).</div>
         </div>
-        <Field group label="Platforms" hint={'None picked = "all". Several are sent comma-separated, e.g. "tokopedia,tiktokshop".'}>
-          <MultiPick
-            options={(platforms.data ?? []).map((p) => ({ value: p.key, label: p.name, hint: p.key }))}
-            value={platformSel}
-            onChange={(v) => {
-              setPlatformSel(v);
-              setBusinessSel([]);
-            }}
-            placeholder="All platforms"
-          />
-        </Field>
         <Field
           group
-          label="Businesses"
-          hint={qualify ? 'None picked = "all". With several platforms, businesses are sent as "platform/business" so equal keys never collide.' : 'None picked = "all" of the platform.'}
+          label="Scope"
+          hint="Which platforms and businesses the request asks for — each business is chosen under its own platform, so equal keys never mix. No rows = every platform."
         >
-          <MultiPick options={businessOptions} value={businessSel} onChange={setBusinessSel} placeholder="All businesses" />
+          <div className="stack-sm">
+            {scope.map((row, i) => {
+              const plat = platforms.data?.find((p) => p.key === row.platform);
+              const set = (patch: Partial<(typeof scope)[number]>) => setScope(scope.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+              return (
+                <div key={row.platform} className="scope-row">
+                  <div className="row-between">
+                    <b className="small">
+                      {plat?.name ?? row.platform} <span className="mono faint">{row.platform}</span>
+                    </b>
+                    <button className="icon-btn" aria-label={`Remove ${row.platform}`} onClick={() => setScope(scope.filter((_, j) => j !== i))}>
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                  <MultiPick
+                    options={(plat?.businesses ?? []).map((b) => ({ value: b.key, label: b.name, hint: b.key }))}
+                    value={row.businesses}
+                    onChange={(v) => set({ businesses: v })}
+                    placeholder="All businesses"
+                  />
+                </div>
+              );
+            })}
+            <Combobox
+              options={(platforms.data ?? []).filter((p) => !scope.some((r) => r.platform === p.key)).map((p) => ({ value: p.key, label: p.name, hint: p.key }))}
+              value=""
+              onChange={(v) => v && setScope([...scope, { platform: v, businesses: [] }])}
+              placeholder={scope.length ? "Add a platform" : "Every platform — or add one"}
+            />
+          </div>
         </Field>
         <Field label="Request attributes (JSON)" hint="Targeting rules are checked against these.">
           <textarea className="input input-mono" rows={6} value={attrs} onChange={(e) => setAttrs(e.target.value)} />
@@ -329,16 +337,14 @@ function Params() {
   );
 }
 
-// resolveBody builds what a service sends to /api/v1/abtest/experiments. Empty
-// selections are sent as "all".
-function resolveBody(ids: Record<string, string>, platforms: string[], businesses: string[], attrs: Record<string, unknown>): ResolveBody {
+// resolveBody builds what a service sends to /api/v1/abtest/experiments.
+function resolveBody(ids: Record<string, string>, scope: { platform: string; businesses: string[] }[], attrs: Record<string, unknown>): ResolveBody {
   const other = Object.fromEntries(Object.entries(ids).filter(([k, v]) => k !== "user_id" && k !== "device_id" && v));
   return {
     ...(ids.user_id ? { user_id: ids.user_id } : {}),
     ...(ids.device_id ? { device_id: ids.device_id } : {}),
     ...(Object.keys(other).length ? { ids: other } : {}),
-    platform: platforms.join(",") || "all",
-    business: businesses.join(",") || "all",
+    scope: scope.length ? Object.fromEntries(scope.map((r) => [r.platform, r.businesses.length ? r.businesses : "all"])) : "all",
     ...(Object.keys(attrs).length ? { attrs } : {}),
   };
 }

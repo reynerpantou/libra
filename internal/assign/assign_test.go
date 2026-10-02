@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -312,50 +313,43 @@ func TestGradualLaunch(t *testing.T) {
 func TestPlatformScope(t *testing.T) {
 	tiktok := &Experiment{ID: 1, LayerID: 1, Name: "tt", PlatformKey: "tiktok", BusinessKey: "search", Status: StatusLaunched, LaunchedVar: 2, Variants: twoVariants()}
 	toko := &Experiment{ID: 2, LayerID: 1, Name: "tk", PlatformKey: "toko", BusinessKey: "search", Status: StatusLaunched, LaunchedVar: 2, Variants: twoVariants()}
-	s := NewSnapshot(1, []*Layer{{ID: 1, Salt: "1"}}, []*Experiment{tiktok, toko})
+	ads := &Experiment{ID: 3, LayerID: 1, Name: "ads", PlatformKey: "tiktok", BusinessKey: "ads", Status: StatusLaunched, LaunchedVar: 2, Variants: twoVariants()}
+	s := NewSnapshot(1, []*Layer{{ID: 1, Salt: "1"}}, []*Experiment{tiktok, toko, ads})
 	s.Platforms = map[string][]string{"tiktok": {"ads", "search"}, "toko": {"search"}}
 
+	ids := func(sc map[string][]string) []int64 {
+		var out []int64
+		for _, h := range s.Resolve(Request{UserID: "u", Scope: sc}, false).Hits {
+			out = append(out, h.ExperimentID)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+		return out
+	}
 	for _, c := range []struct {
-		platform, business string
-		wantP, wantB       string // joined with ","
-		wantErr            string
+		scope map[string][]string
+		want  []int64
 	}{
-		{"tiktok", "", "tiktok", "", ""},
-		{"tiktok", "search", "tiktok", "tiktok/search", ""},
-		{"", "ads", "", "tiktok/ads", ""},                   // one platform has it
-		{"", "search", "", "tiktok/search,toko/search", ""}, // both have it: each stays tied to its platform
-		{"", "", "", "", ""},                                // everything
-		{"all", "all", "", "", ""},                          // the same, spelled out
-		{"tiktok,toko", "all", "tiktok,toko", "", ""},       // several platforms
-		{"all", "toko/search", "", "toko/search", ""},       // qualified business
-		{"tiktok", "toko/search", "", "", "isn't selected"}, // qualified on another platform
-		{"nope", "", "", "", "unknown platform"},
-		{"toko", "ads", "", "", "no selected platform"},
-		{"", "nope", "", "", "unknown business"},
+		{nil, []int64{1, 2, 3}},                               // everything
+		{map[string][]string{"tiktok": {}}, []int64{1, 3}},    // a whole platform
+		{map[string][]string{"toko": {"search"}}, []int64{2}}, // "search" on both platforms: toko's only
+		// Per platform: all of tiktok, but only toko's search.
+		{map[string][]string{"tiktok": {"ads"}, "toko": {}}, []int64{2, 3}},
 	} {
-		p, b, msg := s.Scope(c.platform, c.business)
-		if c.wantErr != "" {
-			if !strings.Contains(msg, c.wantErr) {
-				t.Errorf("Scope(%q, %q): want error %q, got %q", c.platform, c.business, c.wantErr, msg)
-			}
-			continue
-		}
-		if msg != "" || strings.Join(p, ",") != c.wantP || strings.Join(b, ",") != c.wantB {
-			t.Errorf("Scope(%q, %q) = %v, %v, %q", c.platform, c.business, p, b, msg)
+		if got := ids(c.scope); fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Errorf("scope %v: got %v, want %v", c.scope, got, c.want)
 		}
 	}
-	// "search" on both platforms: a toko-only request never gets tiktok's.
-	r := s.Resolve(Request{UserID: "u", Platforms: []string{"toko"}, Businesses: []string{"toko/search"}}, false)
-	if len(r.Hits) != 1 || r.Hits[0].ExperimentID != 2 {
-		t.Errorf("toko/search: %+v", r.Hits)
+	for sc, want := range map[string]map[string][]string{
+		"unknown platform":          {"nope": nil},
+		"has no business":           {"toko": {"ads"}},
+		"(platforms: tiktok, toko)": {"x": nil},
+	} {
+		if msg := s.CheckScope(want); !strings.Contains(msg, sc) {
+			t.Errorf("CheckScope(%v) = %q, want %q", want, msg, sc)
+		}
 	}
-	r = s.Resolve(Request{UserID: "u", Businesses: []string{"tiktok/search", "toko/search"}}, false)
-	if len(r.Hits) != 2 {
-		t.Errorf("both searches: %+v", r.Hits)
-	}
-	r = s.Resolve(Request{UserID: "u", Platform: "toko", Business: "search"}, false)
-	if len(r.Hits) != 1 || r.Hits[0].ExperimentID != 2 {
-		t.Errorf("platform filter: %+v", r.Hits)
+	if msg := s.CheckScope(map[string][]string{"tiktok": {"ads", "search"}}); msg != "" {
+		t.Errorf("valid scope rejected: %s", msg)
 	}
 }
 

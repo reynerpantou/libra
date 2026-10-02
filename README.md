@@ -204,7 +204,7 @@ Create an API key in **Settings**, or with `libra api-key <name> runtime,ingest`
 # What does this user get? (logs exposures)
 # LIBRA=http://localhost:8080/libra
 curl -X POST $LIBRA/api/v1/abtest/experiments -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"user_id":"user-42","device_id":"dev-9f3a","business":"search","attrs":{"region":"ID","device":"android","app_version":"3.500"}}'
+  -d '{"scope":{"shop":["search"]},"user_id":"user-42","device_id":"dev-9f3a","attrs":{"region":"ID","device":"android","app_version":"3.500"}}'
 
 # Business events (batches up to 5,000; ts may be up to 30 days old)
 curl -X POST $LIBRA/api/v1/events -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \

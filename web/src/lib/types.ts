@@ -412,9 +412,11 @@ export interface AuditEntry {
 
 export interface Hit {
   experiment_id: number;
-  experiment: string;
+  experiment_name: string;
   variant_id: number;
-  variant: string;
+  variant_key: string;
+  variant_name: string;
+  libra_url?: string;
   status: Status; // the experiment's status
   reason: "in_experiment" | "test_user" | "launched"; // why the unit got this variant
   unit_type: Diversion;

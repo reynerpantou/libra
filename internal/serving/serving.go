@@ -101,7 +101,7 @@ func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, err
 		       COALESCE((SELECT string_agg(bb.key, ',' ORDER BY array_position(e.business_ids, bb.id)) FROM businesses bb WHERE bb.id = ANY(e.business_ids)), b.key),
 		       p.key, e.layer_id, e.name, e.status, e.salt, array_to_string(e.buckets, ','), e.targeting,
 		       COALESCE(e.launched_variant_id, 0), COALESCE(extract(epoch FROM e.launched_at)::bigint, 0),
-		       COALESCE(extract(epoch FROM e.started_at)::bigint, 0), e.launch_rollout
+		       COALESCE(extract(epoch FROM e.started_at)::bigint, 0), e.launch_rollout, e.kind
 		FROM experiments e JOIN businesses b ON b.id = e.business_id JOIN platforms p ON p.id = b.platform_id
 		WHERE e.status IN ('draft', 'in_review', 'approved', 'rejected', 'active', 'paused', 'launched')`)
 	if err != nil {
@@ -112,7 +112,7 @@ func Load(ctx context.Context, db *sql.DB, version int64) (*assign.Snapshot, err
 		var buckets string
 		var targeting []byte
 		var bkeys string
-		if err := rows.Scan(&e.ID, &e.BusinessKey, &bkeys, &e.PlatformKey, &e.LayerID, &e.Name, &e.Status, &e.Salt, &buckets, &targeting, &e.LaunchedVar, &e.LaunchOrder, &e.StartOrder, &e.LaunchRollout); err != nil {
+		if err := rows.Scan(&e.ID, &e.BusinessKey, &bkeys, &e.PlatformKey, &e.LayerID, &e.Name, &e.Status, &e.Salt, &buckets, &targeting, &e.LaunchedVar, &e.LaunchOrder, &e.StartOrder, &e.LaunchRollout, &e.Kind); err != nil {
 			rows.Close()
 			return nil, err
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,34 +19,21 @@ const MaxBatch = 5000
 
 // selector is a platform or business selection: "" / "all" for everything,
 // one key, a comma-separated list, or a JSON array of keys.
-type selector string
-
-func (s *selector) UnmarshalJSON(b []byte) error {
-	var one string
-	if err := json.Unmarshal(b, &one); err == nil {
-		*s = selector(one)
-		return nil
-	}
-	var many []string
-	if err := json.Unmarshal(b, &many); err != nil {
-		return fmt.Errorf("must be a string or a list of strings")
-	}
-	*s = selector(strings.Join(many, ","))
-	return nil
-}
-
 type resolveRequest struct {
 	UserID   string            `json:"user_id,omitempty"`
 	DeviceID string            `json:"device_id,omitempty"`
 	IDs      map[string]string `json:"ids,omitempty"`     // other diversions, e.g. {"shop_id": "s-1"}
 	UnitID   string            `json:"unit_id,omitempty"` // older name for user_id
-	// Platform and business: "" or "all" for everything, a key, a list
-	// ("tokopedia,tiktokshop" or ["tokopedia", "tiktokshop"]). A business
-	// can be qualified "tokopedia/search"; a bare key means that business
-	// on every selected platform.
-	Platform selector       `json:"platform,omitempty"`
-	Business selector       `json:"business,omitempty"`
-	Attrs    map[string]any `json:"attrs,omitempty"`
+	// Scope says which platforms and businesses the caller wants, as
+	// {"<platform>": "all" | "<business>" | ["<business>", …]}, or "all"
+	// for every platform. Required: a caller never gets every experiment
+	// by accident.
+	Scope json.RawMessage `json:"scope,omitempty"`
+	// Platform and Business were replaced by Scope; sending them is an
+	// error that says how to migrate.
+	Platform json.RawMessage `json:"platform,omitempty"`
+	Business json.RawMessage `json:"business,omitempty"`
+	Attrs    map[string]any  `json:"attrs,omitempty"`
 	// LogExposure records exposures (default true). Set false when the
 	// caller only prefetches config and will report exposures itself.
 	LogExposure *bool `json:"log_exposure,omitempty"`
@@ -55,8 +43,7 @@ type resolveRequest struct {
 type resolveResponse struct {
 	UserID          string            `json:"user_id,omitempty"`
 	DeviceID        string            `json:"device_id,omitempty"`
-	Platforms       []string          `json:"platforms"`  // selected platforms ([] = all)
-	Businesses      []string          `json:"businesses"` // selected platform/business pairs ([] = all)
+	Scope           map[string]any    `json:"scope"` // the scope served: platform -> "all" or its businesses
 	SnapshotVersion int64             `json:"snapshot_version"`
 	Params          map[string]any    `json:"params"`
 	VariantIDs      []int64           `json:"variant_ids"` // every variant this unit got, for logging and debugging
@@ -67,6 +54,16 @@ type resolveResponse struct {
 
 // resolveFor answers a resolve request against a snapshot. The message is
 // set when the request is invalid.
+// appURL is Libra's public address (set at startup) for links in responses.
+var appURL string
+
+func experimentURL(id int64, kind string) string {
+	if kind == "tuning" {
+		return fmt.Sprintf("%s/tuning/%d", appURL, id)
+	}
+	return fmt.Sprintf("%s/experiments/%d", appURL, id)
+}
+
 func resolveFor(snap *assign.Snapshot, req resolveRequest, trace bool) (resolveResponse, assign.Result, string) {
 	req.UserID, req.DeviceID = strings.TrimSpace(req.UserID), strings.TrimSpace(req.DeviceID)
 	if req.UserID == "" {
@@ -75,19 +72,99 @@ func resolveFor(snap *assign.Snapshot, req resolveRequest, trace bool) (resolveR
 	if msg := checkIDs(req.UserID, req.DeviceID, req.IDs, false); msg != "" {
 		return resolveResponse{}, assign.Result{}, msg
 	}
-	platforms, businesses, msg := snap.Scope(string(req.Platform), string(req.Business))
+	scope, msg := parseScope(snap, req)
 	if msg != "" {
 		return resolveResponse{}, assign.Result{}, msg
 	}
-	res := snap.Resolve(assign.Request{UserID: req.UserID, DeviceID: req.DeviceID, IDs: req.IDs, Platforms: platforms, Businesses: businesses, Attrs: req.Attrs}, trace)
+	res := snap.Resolve(assign.Request{UserID: req.UserID, DeviceID: req.DeviceID, IDs: req.IDs, Scope: scope, Attrs: req.Attrs}, trace)
 	out := resolveResponse{
-		UserID: req.UserID, DeviceID: req.DeviceID, Platforms: orEmpty(platforms), Businesses: orEmpty(businesses), SnapshotVersion: snap.Version,
+		UserID: req.UserID, DeviceID: req.DeviceID, Scope: scopeEcho(snap, scope), SnapshotVersion: snap.Version,
 		Params: res.Params, VariantIDs: []int64{}, Hits: res.Hits, Conflicts: res.Conflicts, Trace: res.Trace,
 	}
-	for _, h := range res.Hits {
+	for i, h := range res.Hits {
 		out.VariantIDs = append(out.VariantIDs, h.VariantID)
+		out.Hits[i].URL = experimentURL(h.ExperimentID, snap.ExperimentKind(h.ExperimentID))
 	}
 	return out, res, ""
+}
+
+const scopeExample = `"scope": {"shop": ["search", "reco"], "market": "all"}`
+
+// parseScope reads the request's scope. It accepts "all", or an object of
+// platform -> "all" | business | [businesses]; it returns nil for "all".
+func parseScope(snap *assign.Snapshot, req resolveRequest) (map[string][]string, string) {
+	if len(req.Platform) > 0 || len(req.Business) > 0 {
+		return nil, "platform and business were replaced by scope: send " + scopeExample + ` ("all" for every platform)`
+	}
+	raw := strings.TrimSpace(string(req.Scope))
+	if raw == "" || raw == "null" {
+		return nil, "scope is required — say which platforms and businesses you want, e.g. " + scopeExample + ` (or "scope": "all")`
+	}
+	var all string
+	if json.Unmarshal(req.Scope, &all) == nil {
+		if all == "all" || all == "*" {
+			return nil, ""
+		}
+		return nil, `scope is "all" or an object like ` + scopeExample
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(req.Scope, &obj); err != nil || len(obj) == 0 {
+		return nil, "scope must name at least one platform, like " + scopeExample
+	}
+	scope := map[string][]string{}
+	for p, v := range obj {
+		p = strings.TrimSpace(p)
+		var one string
+		var many []string
+		switch {
+		case json.Unmarshal(v, &one) == nil:
+			if one == "all" || one == "*" {
+				scope[p] = []string{}
+			} else if one = strings.TrimSpace(one); one != "" {
+				scope[p] = []string{one}
+			} else {
+				return nil, fmt.Sprintf(`scope.%s is empty: use "all" or business keys`, p)
+			}
+		case json.Unmarshal(v, &many) == nil:
+			if len(many) == 0 {
+				return nil, fmt.Sprintf(`scope.%s is an empty list: use "all" or business keys`, p)
+			}
+			bs := []string{}
+			for _, b := range many {
+				if b = strings.TrimSpace(b); b == "all" || b == "*" {
+					return nil, fmt.Sprintf(`scope.%s: "all" goes alone, not in a list`, p)
+				} else if b != "" && !slices.Contains(bs, b) {
+					bs = append(bs, b)
+				}
+			}
+			scope[p] = bs
+		default:
+			return nil, fmt.Sprintf(`scope.%s must be "all", a business key or a list of them`, p)
+		}
+	}
+	if msg := snap.CheckScope(scope); msg != "" {
+		return nil, msg
+	}
+	return scope, ""
+}
+
+// scopeEcho is the scope as served, for the response.
+func scopeEcho(snap *assign.Snapshot, scope map[string][]string) map[string]any {
+	out := map[string]any{}
+	if scope == nil {
+		for p := range snap.Platforms {
+			out[p] = "all"
+		}
+		return out
+	}
+	for p, bs := range scope {
+		if len(bs) == 0 {
+			out[p] = "all"
+		} else {
+			out[p] = bs
+		}
+	}
+	return out
 }
 
 func orEmpty(xs []string) []string {

@@ -534,3 +534,5 @@ td.tone-good .small, td.tone-bad .small, td.tone-none .small { color: var(--text
 .jt-decoded { border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent-soft) 45%, transparent); border-radius: 0 6px 6px 0; }
 
 .ptree-decoded { display: inline-block; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent-soft) 45%, transparent); padding-right: 8px; color: var(--text); }
+
+.scope-row { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: grid; gap: 6px; background: var(--surface-2); }

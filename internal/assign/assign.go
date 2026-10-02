@@ -136,7 +136,8 @@ type Experiment struct {
 	// LaunchRollout is the share of units (per mille) a launched variant
 	// serves while it rolls out gradually; 1000 (or 0, unset) is everyone.
 	LaunchRollout int
-	StartOrder    int64 // start time (unix); 0 = never started
+	StartOrder    int64  // start time (unix); 0 = never started
+	Kind          string // ab | tuning
 }
 
 type Layer struct {
@@ -157,85 +158,17 @@ type Snapshot struct {
 	Platforms map[string][]string
 }
 
-// keys reads a selector: "", "all" or "*" mean everything (nil); otherwise
-// a comma-separated list.
-func keys(v string) []string {
-	var out []string
-	for _, k := range strings.Split(v, ",") {
-		k = strings.TrimSpace(k)
-		if k == "all" || k == "*" {
-			return nil
-		}
-		if k != "" && !contains(out, k) {
-			out = append(out, k)
-		}
-	}
-	return out
-}
-
-// Scope resolves a request's platform and business selectors — each "",
-// "all", or a comma-separated list — into platform keys and
-// "platform/business" pairs (nil = all). A business may be written
-// "platform/business"; a bare key means that business on every selected
-// platform that has it. Because a business is always tied to its platform
-// (and parameters live under the platform key), equal business keys on
-// different platforms never collide. The message says what's wrong.
-func (s *Snapshot) Scope(platform, business string) ([]string, []string, string) {
-	platforms := keys(platform)
-	for _, p := range platforms {
-		if _, ok := s.Platforms[p]; !ok {
-			return nil, nil, "unknown platform " + p
-		}
-	}
-	inSelected := func(p string) bool { return len(platforms) == 0 || contains(platforms, p) }
-	var pairs []string
-	for _, b := range keys(business) {
-		if p, k, ok := strings.Cut(b, "/"); ok {
-			if _, known := s.Platforms[p]; !known {
-				return nil, nil, "unknown platform " + p + " in business " + b
-			}
-			if !contains(s.Platforms[p], k) {
-				return nil, nil, fmt.Sprintf("platform %s has no business %s", p, k)
-			}
-			if !inSelected(p) {
-				return nil, nil, fmt.Sprintf("business %s is on platform %s, which isn't selected", b, p)
-			}
-			pairs = append(pairs, b)
-			continue
-		}
-		found := false
-		names := make([]string, 0, len(s.Platforms))
-		for p := range s.Platforms {
-			names = append(names, p)
-		}
-		sort.Strings(names)
-		for _, p := range names {
-			if inSelected(p) && contains(s.Platforms[p], b) {
-				pairs = append(pairs, p+"/"+b)
-				found = true
-			}
-		}
-		if !found {
-			if len(platforms) > 0 {
-				return nil, nil, fmt.Sprintf("no selected platform (%s) has business %s", strings.Join(platforms, ", "), b)
-			}
-			return nil, nil, "unknown business " + b
-		}
-	}
-	return platforms, pairs, ""
-}
-
 // inScope checks an experiment against the request's platform and
 // business selection.
 func (req Request) inScope(e *Experiment) (bool, string, string) {
-	platforms := req.Platforms
-	if req.Platform != "" {
-		platforms = append(append([]string{}, platforms...), req.Platform)
+	if req.Scope == nil {
+		return true, "", ""
 	}
-	if len(platforms) > 0 && !contains(platforms, e.PlatformKey) {
+	want, ok := req.Scope[e.PlatformKey]
+	if !ok {
 		return false, "experiment belongs to platform " + e.PlatformKey, "other_platform"
 	}
-	if len(req.Businesses) == 0 && req.Business == "" {
+	if len(want) == 0 {
 		return true, "", ""
 	}
 	bs := e.BusinessKeys
@@ -243,11 +176,45 @@ func (req Request) inScope(e *Experiment) (bool, string, string) {
 		bs = []string{e.BusinessKey}
 	}
 	for _, k := range bs {
-		if contains(req.Businesses, e.PlatformKey+"/"+k) || (req.Business != "" && k == req.Business) {
+		if contains(want, k) {
 			return true, "", ""
 		}
 	}
 	return false, "experiment runs in " + e.PlatformKey + "/" + strings.Join(bs, ", "), "other_business"
+}
+
+// CheckScope validates a scope against the snapshot's platforms and
+// businesses, naming the valid keys when one is wrong.
+// ExperimentKind is an experiment's kind ("ab" when unknown).
+func (s *Snapshot) ExperimentKind(id int64) string {
+	for _, e := range s.Experiments {
+		if e.ID == id && e.Kind != "" {
+			return e.Kind
+		}
+	}
+	return "ab"
+}
+
+func (s *Snapshot) CheckScope(scope map[string][]string) string {
+	for p, bs := range scope {
+		known, ok := s.Platforms[p]
+		if !ok {
+			names := make([]string, 0, len(s.Platforms))
+			for k := range s.Platforms {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			return fmt.Sprintf("unknown platform %q (platforms: %s)", p, strings.Join(names, ", "))
+		}
+		for _, b := range bs {
+			if !contains(known, b) {
+				ks := append([]string{}, known...)
+				sort.Strings(ks)
+				return fmt.Sprintf("platform %s has no business %q (its businesses: %s)", p, b, strings.Join(ks, ", "))
+			}
+		}
+	}
+	return ""
 }
 
 func contains(xs []string, x string) bool {
@@ -318,14 +285,11 @@ type Request struct {
 	DeviceID string            `json:"device_id,omitempty"`
 	IDs      map[string]string `json:"ids,omitempty"` // other diversions, e.g. {"shop_id": "s-1"}
 	UnitID   string            `json:"unit_id,omitempty"`
-	Platform string            `json:"platform,omitempty"` // only this platform's experiments; empty = all
-	Business string            `json:"business,omitempty"` // only this business's experiments; empty = all
-	// Platforms and Businesses select several at once (empty = all).
-	// Businesses are "platform/business" pairs, so equal keys on different
-	// platforms never mix.
-	Platforms  []string       `json:"-"`
-	Businesses []string       `json:"-"`
-	Attrs      map[string]any `json:"attrs,omitempty"`
+	// Scope limits the request to platforms and their businesses:
+	// platform key -> business keys (empty = all of that platform's).
+	// Nil means every platform (internal callers only; the API requires it).
+	Scope map[string][]string `json:"-"`
+	Attrs map[string]any      `json:"attrs,omitempty"`
 }
 
 // ID returns the request's id for a diversion type.
@@ -349,13 +313,15 @@ func (r Request) ID(diversion string) string {
 // Hit is one experiment the unit is in.
 type Hit struct {
 	ExperimentID int64  `json:"experiment_id"`
-	Experiment   string `json:"experiment"`
+	Experiment   string `json:"experiment_name"`
 	VariantID    int64  `json:"variant_id"`
-	Variant      string `json:"variant"`
+	Variant      string `json:"variant_key"`
+	VariantName  string `json:"variant_name"`
 	Status       string `json:"status"`    // the experiment's status: active, launched, …
 	Reason       string `json:"reason"`    // in_experiment | test_user | launched
 	UnitType     string `json:"unit_type"` // the id this assignment is keyed on
 	UnitID       string `json:"unit_id,omitempty"`
+	URL          string `json:"libra_url,omitempty"` // the experiment in Libra (set by the API)
 }
 
 // Step explains the decision for one experiment (hit diagnosis).
@@ -416,7 +382,7 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 		// finished — including before it starts, which is how QA checks it.
 		if vid, ok := e.Whitelist[unit]; ok && unit != "" && whitelistable(e.Status) {
 			if v := variantByID(e, vid); v != nil {
-				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, e.Status, ReasonTestUser, diversion, unit})
+				res.Hits = append(res.Hits, Hit{ExperimentID: e.ID, Experiment: e.Name, VariantID: v.ID, Variant: v.Key, VariantName: v.Name, Status: e.Status, Reason: ReasonTestUser, UnitType: diversion, UnitID: unit})
 				assigned = append(assigned, struct {
 					e *Experiment
 					v *Variant
@@ -448,7 +414,7 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 				}
 			}
 			if v := variantByID(e, e.LaunchedVar); v != nil {
-				res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, e.Status, ReasonLaunched, diversion, unit})
+				res.Hits = append(res.Hits, Hit{ExperimentID: e.ID, Experiment: e.Name, VariantID: v.ID, Variant: v.Key, VariantName: v.Name, Status: e.Status, Reason: ReasonLaunched, UnitType: diversion, UnitID: unit})
 				launched = append(launched, struct {
 					e *Experiment
 					v *Variant
@@ -488,7 +454,7 @@ func (s *Snapshot) Resolve(req Request, trace bool) Result {
 			record("not_in_traffic", fmt.Sprintf("variant bucket %d is beyond the variant weights", vb))
 			continue
 		}
-		res.Hits = append(res.Hits, Hit{e.ID, e.Name, v.ID, v.Key, e.Status, ReasonInExperiment, diversion, unit})
+		res.Hits = append(res.Hits, Hit{ExperimentID: e.ID, Experiment: e.Name, VariantID: v.ID, Variant: v.Key, VariantName: v.Name, Status: e.Status, Reason: ReasonInExperiment, UnitType: diversion, UnitID: unit})
 		assigned = append(assigned, struct {
 			e *Experiment
 			v *Variant

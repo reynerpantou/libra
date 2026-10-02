@@ -97,8 +97,8 @@ export type ResolveBody = {
   user_id?: string;
   device_id?: string;
   ids?: Record<string, string>;
-  platform: string;
-  business: string;
+  // "all", or platform -> "all" | its business keys
+  scope: "all" | Record<string, "all" | string[]>;
   attrs?: Record<string, unknown>;
 };
 

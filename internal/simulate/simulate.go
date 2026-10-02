@@ -692,11 +692,11 @@ func Generate(ctx context.Context, db *sql.DB, o Options) (Stats, error) {
 				continue
 			}
 			ts := dayStart.Add(time.Duration(rng.Int63n(int64(span))))
-			business := o.Business
+			scope := map[string][]string{o.Platform: {o.Business}}
 			if feedBID != bid {
-				business = "" // search and reco experiments
+				scope[o.Platform] = nil // search and reco experiments
 			}
-			res := snap.Resolve(assign.Request{UserID: u.id, DeviceID: u.device, Platform: o.Platform, Business: business, Attrs: u.attrs}, false)
+			res := snap.Resolve(assign.Request{UserID: u.id, DeviceID: u.device, Scope: scope, Attrs: u.attrs}, false)
 			ours, _ := res.Params[o.Platform].(map[string]any) // this platform's namespace
 			fx := effects(ours, u.attrs)
 			for _, h := range res.Hits {
