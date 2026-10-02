@@ -529,3 +529,6 @@ td.tone-good .small, td.tone-bad .small, td.tone-none .small { color: var(--text
 .notif-time { font-size: 11.5px; color: var(--text-3); }
 .notif-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-top: 6px; }
 .brand-row { display: flex; align-items: center; justify-content: space-between; }
+
+.jt-jsonstr { border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent-text); border-radius: 4px; font-size: 10.5px; font-weight: 600; padding: 0 5px; margin: 0 4px; cursor: pointer; font-family: var(--sans); vertical-align: 1px; }
+.jt-decoded { border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent-soft) 45%, transparent); border-radius: 0 6px 6px 0; }
